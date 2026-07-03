@@ -3,7 +3,7 @@
 
 include("StrategicCommand_Config.lua")
 
-local SC_VERSION = "1.24"
+local SC_VERSION = "1.25"
 local SC_LOAD_TURN = -1
 local SC_SAVE_DATA = nil
 local SC_TAKEOVER_SAVE_KEY = "SC_TAKEOVER_REMAINING"
@@ -20,6 +20,7 @@ local SC_AUTO_RETRY_RUNNING = false
 SC_STRATEGIC_ORDERED_THIS_TURN = {}
 SC_TACTICAL_ORDERED_THIS_TURN = {}
 SC_TACTICAL_NO_TARGET_THIS_TURN = {}
+SC_TACTICAL_QUEUED_THIS_TURN = {}
 SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
 SC_DIRECT_PUSH_FAILED_THIS_TURN = {}
@@ -1018,7 +1019,10 @@ local function SC_CanUnitActForTactical(unit, unitInfo)
 	end
 	unitInfo = unitInfo or SC_GetUnitInfo(unit)
 	if unitInfo ~= nil and unitInfo.Domain == "DOMAIN_AIR" and (unitInfo.RangedCombat or 0) > 0 then
-		return true
+		local moves = SC_GetSafeNumber(function() return unit:MovesLeft() end, 0)
+		local canMove = false
+		pcall(function() canMove = unit:CanMove() end)
+		return canMove or moves > 0
 	end
 	return false
 end
@@ -1122,20 +1126,164 @@ function SC_RecordTacticalNoTarget(unit, unitKey, role, stats, reason)
 	}
 end
 
+function SC_FormatTacticalQueuedCache(info)
+	if info == nil then
+		return "queue=nil"
+	end
+	return "queuedPlot="..tostring(info.plotIndex or "nil")..
+		" target="..tostring(info.targetKey or "nil")..
+		" role="..tostring(info.role or "nil")..
+		" status="..tostring(info.status or "nil")..
+		" reason="..tostring(info.reason or "nil")
+end
+
+function SC_GetValidTacticalQueuedCache(unit, unitKey)
+	if unitKey == nil then
+		return nil
+	end
+	local info = SC_TACTICAL_QUEUED_THIS_TURN[unitKey]
+	if info == nil then
+		return nil
+	end
+	if SC_UnitNeedsOrder ~= nil and SC_UnitNeedsOrder(unit) then
+		SC_TACTICAL_QUEUED_THIS_TURN[unitKey] = nil
+		return nil
+	end
+	local currentPlotIndex = SC_GetUnitPlotIndexForTacticalCache(unit)
+	if currentPlotIndex ~= nil and info.plotIndex ~= nil and currentPlotIndex ~= info.plotIndex then
+		SC_TACTICAL_QUEUED_THIS_TURN[unitKey] = nil
+		return nil
+	end
+	return info
+end
+
+function SC_RecordTacticalQueued(unit, unitKey, role, targetPlot, status, reason)
+	if unitKey == nil then
+		return
+	end
+	local targetKey = "nil"
+	if targetPlot ~= nil then
+		targetKey = tostring(targetPlot:GetX())..","..tostring(targetPlot:GetY())
+	end
+	SC_TACTICAL_QUEUED_THIS_TURN[unitKey] = {
+		plotIndex = SC_GetUnitPlotIndexForTacticalCache(unit),
+		targetKey = targetKey,
+		role = role,
+		status = status or "queued",
+		reason = reason or "pending-resolution"
+	}
+end
+
+function SC_IsStrikeStatusFired(status)
+	return status == "fired" or status == "direct-fired" or status == "native-fired"
+end
+
+function SC_IsStrikeStatusQueued(status)
+	return status == "queued" or status == "direct-queued" or status == "native-queued"
+end
+
+function SC_GetEraRank(eraType)
+	local ranks = {
+		ERA_ANCIENT = 0,
+		ERA_CLASSICAL = 1,
+		ERA_MEDIEVAL = 2,
+		ERA_RENAISSANCE = 3,
+		ERA_INDUSTRIAL = 4,
+		ERA_MODERN = 5,
+		ERA_POSTMODERN = 6,
+		ERA_FUTURE = 7
+	}
+	return ranks[eraType or ""] or -1
+end
+
+function SC_GetPlayerEraRankForCity(city)
+	if city == nil then
+		return -1
+	end
+	local ownerID = SC_GetSafeNumber(function() return city:GetOwner() end, -1)
+	local player = Players[ownerID]
+	if player == nil then
+		return -1
+	end
+	local eraID = SC_GetSafeNumber(function() return player:GetCurrentEra() end, -1)
+	local eraType = nil
+	if GameInfo ~= nil and GameInfo.Eras ~= nil and eraID ~= nil and eraID >= 0 then
+		local eraInfo = GameInfo.Eras[eraID]
+		if eraInfo == nil then
+			for row in GameInfo.Eras() do
+				if row.ID == eraID then
+					eraInfo = row
+					break
+				end
+			end
+		end
+		if eraInfo ~= nil then
+			eraType = eraInfo.Type
+		end
+	end
+	return SC_GetEraRank(eraType)
+end
+
+function SC_GetUnitEraRank(unitInfo)
+	if unitInfo == nil then
+		return -1
+	end
+	if unitInfo.Era ~= nil then
+		local directRank = SC_GetEraRank(unitInfo.Era)
+		if directRank >= 0 then
+			return directRank
+		end
+	end
+	local techType = unitInfo.PrereqTech
+	if techType ~= nil and techType ~= "" and GameInfo ~= nil and GameInfo.Technologies ~= nil then
+		local techInfo = GameInfo.Technologies[techType]
+		if techInfo ~= nil then
+			return SC_GetEraRank(techInfo.Era)
+		end
+	end
+	return -1
+end
+
+function SC_GetUnitPowerScore(unitInfo)
+	if unitInfo == nil then
+		return 0
+	end
+	return math.max(unitInfo.Combat or 0, unitInfo.RangedCombat or 0)
+end
+
+function SC_GetOutdatedUnitRejectReason(unitInfo, playerEraRank)
+	if not SC_GetConfig("AvoidObsoleteFallbackUnits", true) then
+		return nil
+	end
+	if unitInfo == nil then
+		return "missing-info"
+	end
+	local power = SC_GetUnitPowerScore(unitInfo)
+	local unitEraRank = SC_GetUnitEraRank(unitInfo)
+	local maxGap = SC_GetConfig("MaxFallbackUnitEraGap", 2)
+	if playerEraRank >= 0 and unitEraRank >= 0 and (playerEraRank - unitEraRank) > maxGap then
+		return "era-gap:"..tostring(playerEraRank - unitEraRank)
+	end
+	if playerEraRank >= SC_GetEraRank("ERA_MODERN") and power > 0 and power < SC_GetConfig("MinLateGameFallbackCombatPower", 45) then
+		return "low-power:"..tostring(power)
+	end
+	return nil
+end
+
 local function SC_GetBestTrainableUnit(city, preferSea, preferAir, reservedOrders)
 	local bestUnitID = nil
 	local bestScore = -1
 	local bestRole = nil
 	local candidateCount = 0
 	local reservedCount = 0
+	local rejectedOutdated = 0
+	local playerEraRank = SC_GetPlayerEraRankForCity(city)
 	local production = SC_GetConfig("ProductionProfile", "BUILDINGS")
 	local war = SC_GetConfig("WarProfile", "ADVANCE")
 	for unitInfo in GameInfo.Units() do
 		local unitID = unitInfo.ID
 		local reserveKey = "U:"..tostring(unitID)
-		if reservedOrders ~= nil and reservedOrders[reserveKey] then
-			reservedCount = reservedCount + 1
-		elseif SC_CityCanTrain(city, unitID) then
+		if SC_CityCanTrain(city, unitID) then
 			local combat = unitInfo.Combat or 0
 			local rangedCombat = unitInfo.RangedCombat or 0
 			local cost = unitInfo.Cost or 0
@@ -1143,44 +1291,58 @@ local function SC_GetBestTrainableUnit(city, preferSea, preferAir, reservedOrder
 			local nukeDamage = unitInfo.NukeDamageLevel or 0
 			if nukeDamage <= 0 and (combat > 0 or rangedCombat > 0) then
 				if (preferAir and domain == "DOMAIN_AIR") or (preferSea and domain == "DOMAIN_SEA") or ((not preferSea) and (not preferAir) and domain == "DOMAIN_LAND") then
-					candidateCount = candidateCount + 1
-					local role = SC_GetUnitRole(nil, unitInfo)
-					local score = combat + rangedCombat * 1.25 + math.max(cost, 0) / 18 + (unitInfo.Range or 0) * 15 + (unitInfo.Moves or 0) * 4
-					if production == "AIRSEA" or war == "NAVAL" then
-						if role == "carrier" then
-							score = score + 260
-						elseif role == "missile_carrier" then
-							score = score + 230
-						elseif role == "naval_ranged" then
-							score = score + 170
-						elseif role == "submarine" then
-							score = score + 130
-						elseif role == "fighter" or role == "bomber" or role == "carrier_air" then
-							score = score + 160
+					local rejectReason = SC_GetOutdatedUnitRejectReason(unitInfo, playerEraRank)
+					if rejectReason ~= nil then
+						rejectedOutdated = rejectedOutdated + 1
+					else
+						candidateCount = candidateCount + 1
+						local role = SC_GetUnitRole(nil, unitInfo)
+						local unitEraRank = SC_GetUnitEraRank(unitInfo)
+						local power = SC_GetUnitPowerScore(unitInfo)
+						local score = power * 2.2 + rangedCombat * 0.7 + math.max(cost, 0) / 10 + (unitInfo.Range or 0) * 18 + (unitInfo.Moves or 0) * 5 + math.max(unitEraRank, 0) * 35
+						if reservedOrders ~= nil and reservedOrders[reserveKey] then
+							reservedCount = reservedCount + 1
+							score = score - SC_GetConfig("RepeatedUnitReservationPenalty", 15)
 						end
-					elseif production == "MILITARY" or war == "ASSAULT" then
-						if role == "fast_assault" then
-							score = score + 150
-						elseif role == "siege" or role == "land_ranged" then
-							score = score + 110
-						elseif role == "assault" then
-							score = score + 60
+						if playerEraRank >= 0 and unitEraRank >= playerEraRank - 1 then
+							score = score + 90
 						end
-					elseif war == "DEFENSE" then
-						if role == "land_ranged" or role == "siege" or role == "fighter" then
-							score = score + 150
+						if production == "AIRSEA" or war == "NAVAL" then
+							if role == "carrier" then
+								score = score + 260
+							elseif role == "missile_carrier" then
+								score = score + 230
+							elseif role == "naval_ranged" then
+								score = score + 170
+							elseif role == "submarine" then
+								score = score + 130
+							elseif role == "fighter" or role == "bomber" or role == "carrier_air" then
+								score = score + 160
+							end
+						elseif production == "MILITARY" or war == "ASSAULT" then
+							if role == "fast_assault" then
+								score = score + 150
+							elseif role == "siege" or role == "land_ranged" then
+								score = score + 110
+							elseif role == "assault" then
+								score = score + 60
+							end
+						elseif war == "DEFENSE" then
+							if role == "land_ranged" or role == "siege" or role == "fighter" then
+								score = score + 150
+							end
 						end
-					end
-					if score > bestScore then
-						bestScore = score
-						bestUnitID = unitID
-						bestRole = role
+						if score > bestScore then
+							bestScore = score
+							bestUnitID = unitID
+							bestRole = role
+						end
 					end
 				end
 			end
 		end
 	end
-	return bestUnitID, bestScore, candidateCount, bestRole, reservedCount
+	return bestUnitID, bestScore, candidateCount, bestRole, reservedCount, rejectedOutdated, playerEraRank
 end
 
 local function SC_ShouldBuildMilitary(player, city, atWar)
@@ -1359,16 +1521,34 @@ local function SC_RangeStrike(unit, plot)
 		end
 		local before = getStrikeSnapshot()
 		if SC_SendUnitMission(unit, missionType, plot:GetX(), plot:GetY()) then
-			local resolved, status = finishIfStrikeResolved(before, reason, allowOrderClear)
+			local resolved, status = finishIfStrikeResolved(before, reason, false)
 			if resolved then
 				return true, status
 			end
+			local directTried = false
 			if SC_TryDirectTargetedMission ~= nil and SC_TryDirectTargetedMission(unit, missionType, plot, reason) then
-				return true, "direct"
+				directTried = true
+				local directResolved, directStatus = finishIfStrikeResolved(before, tostring(reason).."-direct", true)
+				if directResolved then
+					return true, directStatus
+				end
+			elseif SC_GetConfig("DirectPushTargetedMissionFallback", true) then
+				directTried = true
+			end
+			resolved, status = finishIfStrikeResolved(before, reason, allowOrderClear)
+			if resolved then
+				SC_Debug("rangeStrike queued-after-fallback unit="..SC_GetUnitDebugLabel(unit)..
+					" mission="..SC_GetEnumDebugName(MissionTypes, missionType)..
+					" reason="..tostring(reason)..
+					" directTried="..SC_BoolText(directTried)..
+					" status="..tostring(status)..
+					" state="..SC_GetUnitOrderDebug(unit))
+				return true, status
 			end
 			SC_Debug("rangeStrike unresolved unit="..SC_GetUnitDebugLabel(unit)..
 				" mission="..SC_GetEnumDebugName(MissionTypes, missionType)..
 				" reason="..tostring(reason)..
+				" directTried="..SC_BoolText(directTried)..
 				" state="..SC_GetUnitOrderDebug(unit))
 			targetCommandAccepted = true
 		end
@@ -1578,6 +1758,10 @@ local function SC_AutomateLocalDefense(player, atWar)
 					if unitKey ~= nil and actionCount >= actionCap then
 						debugUnit("localDefense unit-cap unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." count="..tostring(actionCount).." cap="..tostring(actionCap))
 					elseif canAct and SC_IsRangedAttackUnit(unit, unitInfo, role) then
+						local cachedQueued = SC_GetValidTacticalQueuedCache(unit, unitKey)
+						if cachedQueued ~= nil then
+							debugUnit("localDefense queued-cached unit="..SC_GetUnitDebugLabel(unit).." "..SC_FormatTacticalQueuedCache(cachedQueued))
+						else
 						local cachedNoTarget = SC_GetValidTacticalNoTargetCache(unit, unitKey)
 						if cachedNoTarget ~= nil then
 							debugUnit("localDefense no-target-cached unit="..SC_GetUnitDebugLabel(unit).." "..SC_FormatTacticalNoTargetCache(cachedNoTarget))
@@ -1591,13 +1775,18 @@ local function SC_AutomateLocalDefense(player, atWar)
 							if targetPlot ~= nil and strikeDone then
 								local newCount = SC_RecordTacticalAction(unitKey)
 								local label = "queued"
-								if strikeStatus == "fired" or strikeStatus == "direct" then
+								if SC_IsStrikeStatusFired(strikeStatus) then
 									label = "fired"
 								end
 								debugUnit("localDefense "..label.." round="..tostring(round).." unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." status="..tostring(strikeStatus).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
 								if unitKey ~= nil then
 									SC_TACTICAL_ORDERED_THIS_TURN[unitKey] = newCount
-									SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = nil
+									if SC_IsStrikeStatusQueued(strikeStatus) then
+										SC_RecordTacticalQueued(unit, unitKey, role, targetPlot, strikeStatus, "localDefense")
+									else
+										SC_TACTICAL_QUEUED_THIS_TURN[unitKey] = nil
+										SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = nil
+									end
 								end
 								actions = actions + 1
 								roundActions = roundActions + 1
@@ -1611,6 +1800,7 @@ local function SC_AutomateLocalDefense(player, atWar)
 									SC_TACTICAL_ORDERED_THIS_TURN[unitKey] = newCount
 								end
 							end
+						end
 						end
 					elseif not canAct then
 						debugUnit("localDefense cannot-act unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role))
@@ -2464,27 +2654,32 @@ local function SC_ChooseCityProduction(player, city, atWar, reservedOrders)
 		local unitCandidates = nil
 		local unitRole = nil
 		local unitReserved = nil
+		local unitRejected = nil
+		local unitEra = nil
 		if production == "AIRSEA" then
 			if ok and coastal then
-				unitID, unitScore, unitCandidates, unitRole, unitReserved = SC_GetBestTrainableUnit(city, true, false, reservedOrders)
+				unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, true, false, reservedOrders)
 			end
 			if unitID == nil then
-				unitID, unitScore, unitCandidates, unitRole, unitReserved = SC_GetBestTrainableUnit(city, false, true, reservedOrders)
+				unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, true, reservedOrders)
 			end
 		end
 		if unitID == nil then
-			unitID, unitScore, unitCandidates, unitRole, unitReserved = SC_GetBestTrainableUnit(city, ok and coastal, false, reservedOrders)
+			unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, ok and coastal, false, reservedOrders)
 		end
 		if unitID == nil and ok and coastal then
-			unitID, unitScore, unitCandidates, unitRole, unitReserved = SC_GetBestTrainableUnit(city, false, false, reservedOrders)
+			unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, false, reservedOrders)
 		end
 		if unitID ~= nil and SC_PushCityOrder(city, OrderTypes.ORDER_TRAIN, unitID) then
 			local unitInfo = GameInfo.Units[unitID]
 			local reserveKey = "U:"..tostring(unitID)
 			if SC_GetConfig("DebugCityProduction", true) then
-				SC_Debug("cityProduction choose city="..tostring(cityName).." category=military item="..tostring(unitInfo and unitInfo.Type or "UNIT").." role="..tostring(unitRole).." score="..tostring(unitScore).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." reason=military-target queue="..tostring(queueLength))
+				SC_Debug("cityProduction choose city="..tostring(cityName).." category=military item="..tostring(unitInfo and unitInfo.Type or "UNIT").." role="..tostring(unitRole).." score="..tostring(unitScore).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=military-target queue="..tostring(queueLength))
 			end
 			return unitInfo and unitInfo.Type or "UNIT", reserveKey
+		end
+		if unitID == nil and SC_GetConfig("DebugCityProduction", true) then
+			SC_Debug("cityProduction military-no-unit city="..tostring(cityName).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=no-viable-modern-unit")
 		end
 	elseif SC_GetConfig("DebugCityProduction", true) then
 		SC_Debug("cityProduction military-skip city="..tostring(cityName).." reason=force-not-needed profile="..tostring(production).." atWar="..SC_BoolText(atWar))
@@ -2500,14 +2695,17 @@ local function SC_ChooseCityProduction(player, city, atWar, reservedOrders)
 		return buildingInfo and buildingInfo.Type or "BUILDING", reserveKey
 	end
 	
-	local unitID, unitScore, unitCandidates, unitRole, unitReserved = SC_GetBestTrainableUnit(city, false, false, reservedOrders)
+	local unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, false, reservedOrders)
 	if unitID ~= nil and SC_PushCityOrder(city, OrderTypes.ORDER_TRAIN, unitID) then
 		local unitInfo = GameInfo.Units[unitID]
 		local reserveKey = "U:"..tostring(unitID)
 		if SC_GetConfig("DebugCityProduction", true) then
-			SC_Debug("cityProduction choose city="..tostring(cityName).." category=fallback-unit item="..tostring(unitInfo and unitInfo.Type or "UNIT").." role="..tostring(unitRole).." score="..tostring(unitScore).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." reason=no-building queue="..tostring(queueLength))
+			SC_Debug("cityProduction choose city="..tostring(cityName).." category=fallback-unit item="..tostring(unitInfo and unitInfo.Type or "UNIT").." role="..tostring(unitRole).." score="..tostring(unitScore).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=no-building queue="..tostring(queueLength))
 		end
 		return unitInfo and unitInfo.Type or "UNIT", reserveKey
+	end
+	if unitID == nil and SC_GetConfig("DebugCityProduction", true) then
+		SC_Debug("cityProduction fallback-no-unit city="..tostring(cityName).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=no-viable-fallback-unit")
 	end
 	
 	local processType = "PROCESS_WEALTH"
@@ -3925,6 +4123,7 @@ local function SC_AutomateStrategicMovement(player, atWar)
 								if unitKey ~= nil then
 									SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = true
 									SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = nil
+									SC_TACTICAL_QUEUED_THIS_TURN[unitKey] = nil
 								end
 								moved = moved + 1
 							else
@@ -4547,6 +4746,10 @@ local function SC_AutomateFinalUnitOrders(player, atWar)
 			if unitKey ~= nil and actionCount >= actionCap then
 				debugFinal("finalOrders tactical-cap unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." count="..tostring(actionCount).." cap="..tostring(actionCap))
 			else
+				local cachedQueued = SC_GetValidTacticalQueuedCache(unit, unitKey)
+				if cachedQueued ~= nil then
+					debugFinal("finalOrders tactical-queued-cached unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." "..SC_FormatTacticalQueuedCache(cachedQueued))
+				else
 				local cachedNoTarget = SC_GetValidTacticalNoTargetCache(unit, unitKey)
 				if cachedNoTarget ~= nil then
 					debugFinal("finalOrders tactical-no-target-cached unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." "..SC_FormatTacticalNoTargetCache(cachedNoTarget))
@@ -4558,12 +4761,17 @@ local function SC_AutomateFinalUnitOrders(player, atWar)
 					if done then
 						local newCount = SC_RecordTacticalAction(unitKey)
 						local label = "queued"
-						if strikeStatus == "fired" or strikeStatus == "direct" then
+						if SC_IsStrikeStatusFired(strikeStatus) then
 							label = "fired"
 						end
 						debugFinal("finalOrders tactical-"..label.." unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." status="..tostring(strikeStatus).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
 						if unitKey ~= nil then
-							SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = nil
+							if SC_IsStrikeStatusQueued(strikeStatus) then
+								SC_RecordTacticalQueued(unit, unitKey, role, targetPlot, strikeStatus, "finalOrders")
+							else
+								SC_TACTICAL_QUEUED_THIS_TURN[unitKey] = nil
+								SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = nil
+							end
 						end
 					else
 						debugFinal("finalOrders tactical-failed unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." status="..tostring(strikeStatus).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
@@ -4571,6 +4779,7 @@ local function SC_AutomateFinalUnitOrders(player, atWar)
 				else
 					SC_RecordTacticalNoTarget(unit, unitKey, role, targetStats, "out-of-range")
 					debugFinal("finalOrders tactical-no-target unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." "..SC_GetRangeTargetStatsDebug(targetStats))
+				end
 				end
 				end
 			end
@@ -5286,7 +5495,11 @@ function SC_ApplyStrategicProfiles()
 	SC_CONFIG.AutoTradeRoutes = true
 	SC_CONFIG.AutoEspionage = true
 SC_CONFIG.DirectPushMissionFallback = true
-SC_CONFIG.DirectPushTargetedMissionFallback = false
+SC_CONFIG.DirectPushTargetedMissionFallback = true
+SC_CONFIG.AvoidObsoleteFallbackUnits = true
+SC_CONFIG.MaxFallbackUnitEraGap = 2
+SC_CONFIG.MinLateGameFallbackCombatPower = 45
+SC_CONFIG.RepeatedUnitReservationPenalty = 15
 SC_CONFIG.MaxAutoEndTurnSendsPerTurn = 6
 SC_CONFIG.MaxStackEscapeAttemptsPerUnitPerTurn = 8
 SC_CONFIG.MaxStackEscapeCandidatesPerUnit = 10
@@ -5356,6 +5569,7 @@ local function SC_ResetTakeoverPassCounterForTurn()
 		SC_STRATEGIC_ORDERED_THIS_TURN = {}
 		SC_TACTICAL_ORDERED_THIS_TURN = {}
 		SC_TACTICAL_NO_TARGET_THIS_TURN = {}
+		SC_TACTICAL_QUEUED_THIS_TURN = {}
 		SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 		SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
 		SC_DIRECT_PUSH_FAILED_THIS_TURN = {}
