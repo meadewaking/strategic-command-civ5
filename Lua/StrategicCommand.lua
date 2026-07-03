@@ -3,7 +3,7 @@
 
 include("StrategicCommand_Config.lua")
 
-local SC_VERSION = "1.26"
+local SC_VERSION = "1.27"
 local SC_LOAD_TURN = -1
 local SC_SAVE_DATA = nil
 local SC_TAKEOVER_SAVE_KEY = "SC_TAKEOVER_REMAINING"
@@ -29,6 +29,10 @@ SC_RANGE_FAILED_THIS_TURN = {}
 SC_POPUP_LOGGED_THIS_TURN = {}
 SC_USER_INPUT_LOG_COUNT_THIS_TURN = 0
 SC_RECENT_PLAYER_INPUT_EVENTS = 0
+SC_AUDIT_COUNTER_TURN = -1
+SC_DEMO_LOG_COUNT_THIS_TURN = 0
+SC_DEMO_WORLD_SNAPSHOT_TURN = -1
+SC_DEMO_WORLD_SNAPSHOT_REASON = ""
 SC_POLICY_FAILED_THIS_TURN = {}
 SC_POLICY_PENDING_THIS_TURN = false
 SC_UNIT_AUDIT_LAST = {}
@@ -202,10 +206,17 @@ end
 
 function SC_AuditUserInput(action, detail)
 	local remaining = tonumber(SC_GetConfig("TakeoverTurnsRemaining", 0)) or 0
-	if not SC_GetConfig("AuditUserInput", true) or remaining <= 0 then
+	local demoActive = SC_IsDemonstrationLoggingActive ~= nil and SC_IsDemonstrationLoggingActive()
+	if not SC_GetConfig("AuditUserInput", true) or (remaining <= 0 and not demoActive) then
 		return
 	end
+	if SC_ResetAuditCountersForTurn ~= nil then
+		SC_ResetAuditCountersForTurn()
+	end
 	local limit = SC_GetConfig("AuditUserInputLimitPerTurn", 120)
+	if demoActive then
+		limit = SC_GetConfig("DemonstrationInputLimitPerTurn", 1200)
+	end
 	if SC_USER_INPUT_LOG_COUNT_THIS_TURN >= limit then
 		return
 	end
@@ -231,6 +242,43 @@ function SC_GetEnumDebugName(enumTable, value)
 		end
 	end
 	return tostring(value)
+end
+
+function SC_ResetAuditCountersForTurn()
+	local turn = -1
+	pcall(function()
+		if Game ~= nil and Game.GetGameTurn ~= nil then
+			turn = Game.GetGameTurn()
+		end
+	end)
+	if SC_AUDIT_COUNTER_TURN ~= turn then
+		SC_AUDIT_COUNTER_TURN = turn
+		SC_USER_INPUT_LOG_COUNT_THIS_TURN = 0
+		SC_DEMO_LOG_COUNT_THIS_TURN = 0
+		SC_RECENT_PLAYER_INPUT_EVENTS = 0
+	end
+end
+
+function SC_IsDemonstrationLoggingActive()
+	return SC_GetConfig("DemonstrationLogging", true) == true
+end
+
+function SC_DemoLog(category, detail)
+	if not SC_IsDemonstrationLoggingActive() then
+		return false
+	end
+	SC_ResetAuditCountersForTurn()
+	local maxLines = SC_GetConfig("DemonstrationMaxLinesPerTurn", 5000)
+	if SC_DEMO_LOG_COUNT_THIS_TURN >= maxLines then
+		if SC_DEMO_LOG_COUNT_THIS_TURN == maxLines then
+			SC_DEMO_LOG_COUNT_THIS_TURN = SC_DEMO_LOG_COUNT_THIS_TURN + 1
+			SC_Debug("DEMO category=cap reason=max-lines-per-turn max="..tostring(maxLines))
+		end
+		return false
+	end
+	SC_DEMO_LOG_COUNT_THIS_TURN = SC_DEMO_LOG_COUNT_THIS_TURN + 1
+	SC_Debug("DEMO category="..tostring(category).." "..tostring(detail or ""))
+	return true
 end
 
 local function SC_GetID(typeName)
@@ -988,6 +1036,141 @@ function SC_AuditPlayerUnits(player, phase, fullSnapshot)
 	end
 	SC_Debug("unitAudit end seq="..tostring(SC_UNIT_AUDIT_SEQ).." phase="..tostring(phase).." units="..tostring(count).." changes="..tostring(changes))
 	return count, changes
+end
+
+function SC_SanitizeDemoText(text)
+	text = tostring(text or "")
+	text = string.gsub(text, "[\r\n\t ]+", "_")
+	text = string.gsub(text, "\"", "'")
+	return text
+end
+
+function SC_GetPlayerDemoLabel(player)
+	if player == nil then
+		return "P?"
+	end
+	local playerID = SC_GetSafeNumber(function() return player:GetID() end, -1)
+	local teamID = SC_GetSafeNumber(function() return player:GetTeam() end, -1)
+	local civ = "?"
+	local leader = "?"
+	pcall(function() civ = player:GetCivilizationShortDescription() end)
+	pcall(function() leader = player:GetName() end)
+	return "P"..tostring(playerID).." team="..tostring(teamID).." civ="..SC_SanitizeDemoText(civ).." leader="..SC_SanitizeDemoText(leader)
+end
+
+function SC_CountPlayerUnits(player)
+	local count = 0
+	if player ~= nil then
+		for unit in player:Units() do
+			count = count + 1
+		end
+	end
+	return count
+end
+
+function SC_CountPlayerCities(player)
+	local count = 0
+	if player ~= nil then
+		for city in player:Cities() do
+			count = count + 1
+		end
+	end
+	return count
+end
+
+function SC_PlayerAtWarWithActive(player)
+	local active = nil
+	pcall(function()
+		if Players ~= nil and Game ~= nil then
+			active = Players[Game.GetActivePlayer()]
+		end
+	end)
+	if player == nil or active == nil or player:GetID() == active:GetID() then
+		return false
+	end
+	local activeTeam = Teams[active:GetTeam()]
+	if activeTeam == nil then
+		return false
+	end
+	return activeTeam:IsAtWar(player:GetTeam())
+end
+
+function SC_FormatCityDemoSnapshot(city)
+	if city == nil then
+		return "city=nil"
+	end
+	local owner = SC_GetSafeNumber(function() return city:GetOwner() end, -1)
+	local cityID = SC_GetSafeNumber(function() return city:GetID() end, -1)
+	local x = SC_GetSafeNumber(function() return city:GetX() end, -1)
+	local y = SC_GetSafeNumber(function() return city:GetY() end, -1)
+	local pop = SC_GetSafeNumber(function() return city:GetPopulation() end, -1)
+	local damage = SC_GetSafeNumber(function() return city:GetDamage() end, -1)
+	local maxHP = SC_GetSafeNumber(function() return city:GetMaxHitPoints() end, -1)
+	local production = "?"
+	local name = "city"
+	pcall(function() name = city:GetName() end)
+	pcall(function() production = city:GetProductionName() end)
+	return "city="..SC_SanitizeDemoText(name).."#"..tostring(cityID)..
+		" owner=P"..tostring(owner)..
+		" plot="..tostring(x)..","..tostring(y)..
+		" pop="..tostring(pop)..
+		" damage="..tostring(damage)..
+		" maxHP="..tostring(maxHP)..
+		" production="..SC_SanitizeDemoText(production)
+end
+
+function SC_DemoAuditWorld(reason, fullSnapshot)
+	if not SC_IsDemonstrationLoggingActive() then
+		return
+	end
+	local turn = SC_GetSafeNumber(function() return Game.GetGameTurn() end, -1)
+	local snapshotKey = tostring(turn).."|"..tostring(reason)
+	if SC_DEMO_WORLD_SNAPSHOT_TURN == turn and SC_DEMO_WORLD_SNAPSHOT_REASON == snapshotKey then
+		return
+	end
+	SC_DEMO_WORLD_SNAPSHOT_TURN = turn
+	SC_DEMO_WORLD_SNAPSHOT_REASON = snapshotKey
+	local activePlayerID = SC_GetSafeNumber(function() return Game.GetActivePlayer() end, -1)
+	local maxUnits = SC_GetConfig("DemonstrationMaxUnitsPerSnapshot", 2500)
+	local maxCities = SC_GetConfig("DemonstrationMaxCitiesPerSnapshot", 500)
+	local unitLines = 0
+	local cityLines = 0
+	SC_DemoLog("world", "reason="..tostring(reason).." full="..SC_BoolText(fullSnapshot == true).." active=P"..tostring(activePlayerID))
+	for playerID, player in pairs(Players) do
+		if player ~= nil and player:IsAlive() then
+			local unitCount = SC_CountPlayerUnits(player)
+			local cityCount = SC_CountPlayerCities(player)
+			SC_DemoLog("playerSummary", "reason="..tostring(reason).." "..SC_GetPlayerDemoLabel(player)..
+				" human="..SC_BoolText(player:IsHuman())..
+				" minor="..SC_BoolText(player:IsMinorCiv())..
+				" barbarian="..SC_BoolText(player:IsBarbarian())..
+				" atWarActive="..SC_BoolText(SC_PlayerAtWarWithActive(player))..
+				" units="..tostring(unitCount)..
+				" cities="..tostring(cityCount)..
+				" gold="..tostring(SC_GetSafeNumber(function() return player:GetGold() end, "?"))..
+				" goldRate="..tostring(SC_GetSafeNumber(function() return player:CalculateGoldRate() end, "?")))
+			if fullSnapshot == true then
+				for city in player:Cities() do
+					if cityLines < maxCities then
+						SC_DemoLog("cityState", "reason="..tostring(reason).." "..SC_FormatCityDemoSnapshot(city))
+					elseif cityLines == maxCities then
+						SC_DemoLog("cityState", "reason="..tostring(reason).." truncated=true max="..tostring(maxCities))
+					end
+					cityLines = cityLines + 1
+				end
+				for unit in player:Units() do
+					if unitLines < maxUnits then
+						local snapshot = SC_GetUnitAuditSnapshot(unit)
+						SC_DemoLog("unitState", "reason="..tostring(reason).." "..SC_FormatUnitAuditSnapshot(snapshot))
+					elseif unitLines == maxUnits then
+						SC_DemoLog("unitState", "reason="..tostring(reason).." truncated=true max="..tostring(maxUnits))
+					end
+					unitLines = unitLines + 1
+				end
+			end
+		end
+	end
+	SC_DemoLog("worldEnd", "reason="..tostring(reason).." unitsLogged="..tostring(math.min(unitLines, maxUnits)).." unitsSeen="..tostring(unitLines).." citiesLogged="..tostring(math.min(cityLines, maxCities)).." citiesSeen="..tostring(cityLines))
 end
 
 local function SC_IsRangedAttackUnit(unit, unitInfo, role)
@@ -5684,6 +5867,7 @@ local function SC_ResetTakeoverPassCounterForTurn()
 		SC_PROMOTION_ACTION_LOGGED_THIS_TURN = {}
 		SC_GREAT_PERSON_ACTION_ATTEMPTED_THIS_TURN = {}
 		SC_USER_INPUT_LOG_COUNT_THIS_TURN = 0
+		SC_DEMO_LOG_COUNT_THIS_TURN = 0
 		SC_RECENT_PLAYER_INPUT_EVENTS = 0
 		SC_POLICY_FAILED_THIS_TURN = {}
 		SC_POLICY_PENDING_THIS_TURN = false
@@ -6535,6 +6719,14 @@ local function SC_HandleArchaeologyPopup(player, popupInfo)
 end
 
 local function SC_OnPopupAutoHandle(popupInfo)
+	if popupInfo ~= nil and popupInfo.Type ~= nil and SC_IsDemonstrationLoggingActive ~= nil and SC_IsDemonstrationLoggingActive() then
+		SC_DemoLog("popup", "event=SerialEventGameMessagePopup type="..SC_GetEnumDebugName(ButtonPopupTypes, popupInfo.Type)..
+			" data1="..tostring(popupInfo.Data1)..
+			" data2="..tostring(popupInfo.Data2)..
+			" data3="..tostring(popupInfo.Data3)..
+			" option1="..SC_BoolText(popupInfo.Option1 == true)..
+			" option2="..SC_BoolText(popupInfo.Option2 == true))
+	end
 	if popupInfo == nil or popupInfo.Type == nil or not SC_IsTakeoverActive() or not SC_GetConfig("AutoPopupHandling", true) then
 		return
 	end
@@ -6898,6 +7090,13 @@ SC_ProcessNotificationQueue = function(player, reason)
 end
 
 local function SC_OnNotificationAdded(id, notificationType, toolTip, summary, gameValue, extraGameData)
+	if SC_IsDemonstrationLoggingActive ~= nil and SC_IsDemonstrationLoggingActive() then
+		SC_DemoLog("notification", "id="..tostring(id)..
+			" type="..SC_GetNotificationDebugName(notificationType)..
+			" summary="..SC_SanitizeDemoText(summary)..
+			" gameValue="..tostring(gameValue)..
+			" extra="..tostring(extraGameData))
+	end
 	if not SC_IsTakeoverActive() or not SC_GetConfig("AutoPopupHandling", true) then
 		return
 	end
@@ -6909,6 +7108,13 @@ end
 Events.NotificationAdded.Add(SC_OnNotificationAdded)
 
 local function SC_OnAILeaderMessage(iPlayer, iDiploUIState, szLeaderMessage, iAnimationAction, iData1)
+	if SC_IsDemonstrationLoggingActive ~= nil and SC_IsDemonstrationLoggingActive() then
+		SC_DemoLog("diplomacy", "event=AILeaderMessage player=P"..tostring(iPlayer)..
+			" state="..tostring(iDiploUIState)..
+			" animation="..tostring(iAnimationAction)..
+			" data1="..tostring(iData1)..
+			" message="..SC_SanitizeDemoText(szLeaderMessage))
+	end
 	if not SC_IsTakeoverActive() or not SC_GetConfig("AutoPopupHandling", true) then
 		return
 	end
@@ -6922,10 +7128,40 @@ local function SC_OnAILeaderMessage(iPlayer, iDiploUIState, szLeaderMessage, iAn
 end
 Events.AILeaderMessage.Add(SC_OnAILeaderMessage)
 
+function SC_OnDemoPlayerDoTurn(playerID)
+	local ok, err = pcall(function()
+		if not SC_IsDemonstrationLoggingActive() then
+			return
+		end
+		local player = Players[playerID]
+		if player == nil then
+			SC_DemoLog("turn", "event=PlayerDoTurn player=P"..tostring(playerID).." missing=true")
+			return
+		end
+		SC_DemoLog("turn", "event=PlayerDoTurn "..SC_GetPlayerDemoLabel(player)..
+			" alive="..SC_BoolText(player:IsAlive())..
+			" active="..SC_BoolText(playerID == Game.GetActivePlayer())..
+			" units="..tostring(SC_CountPlayerUnits(player))..
+			" cities="..tostring(SC_CountPlayerCities(player))..
+			" atWarActive="..SC_BoolText(SC_PlayerAtWarWithActive(player)))
+		if SC_GetConfig("DemonstrationSnapshotOnEveryPlayerDoTurn", false) and player:IsAlive() then
+			SC_DemoAuditWorld("playerDoTurn:P"..tostring(playerID), SC_GetConfig("DemonstrationFullSnapshots", true))
+		end
+	end)
+	if not ok then
+		SC_Debug("DEMO category=error event=PlayerDoTurn err="..tostring(err))
+	end
+end
+
+GameEvents.PlayerDoTurn.Add(SC_OnDemoPlayerDoTurn)
+
 local function SC_OnPlayerDoTurnV11(playerID)
 	local ok, err = pcall(function()
 		if not SC_GetConfig("Enabled", true) or not SC_IsHumanActivePlayer(playerID) then
 			return
+		end
+		if SC_IsDemonstrationLoggingActive ~= nil and SC_IsDemonstrationLoggingActive() then
+			SC_DemoAuditWorld("humanPlayerDoTurn:P"..tostring(playerID), SC_GetConfig("DemonstrationFullSnapshots", true))
 		end
 		SC_Debug("PlayerDoTurn event player="..tostring(playerID).." remaining="..tostring(SC_GetConfig("TakeoverTurnsRemaining", 0)))
 		if not SC_IsTakeoverActive() then
@@ -6962,6 +7198,9 @@ local function SC_OnActivePlayerTurnStartV11()
 		local player = SC_GetActiveHuman()
 		if player == nil or not SC_GetConfig("Enabled", true) then
 			return
+		end
+		if SC_IsDemonstrationLoggingActive ~= nil and SC_IsDemonstrationLoggingActive() then
+			SC_DemoAuditWorld("activePlayerTurnStart", SC_GetConfig("DemonstrationFullSnapshots", true))
 		end
 		SC_Debug("ActivePlayerTurnStart event remaining="..tostring(SC_GetConfig("TakeoverTurnsRemaining", 0)))
 		if not SC_IsTakeoverActive() then
@@ -7026,10 +7265,13 @@ function SC_OnUnitSelectionAudit(playerID, unitID, hexX, hexY, unitType, isSelec
 	if isSelected ~= true or playerID ~= Game.GetActivePlayer() then
 		return
 	end
-	if SC_RECENT_PLAYER_INPUT_EVENTS <= 0 then
+	local demoActive = SC_IsDemonstrationLoggingActive ~= nil and SC_IsDemonstrationLoggingActive()
+	if SC_RECENT_PLAYER_INPUT_EVENTS <= 0 and not demoActive then
 		return
 	end
-	SC_RECENT_PLAYER_INPUT_EVENTS = SC_RECENT_PLAYER_INPUT_EVENTS - 1
+	if SC_RECENT_PLAYER_INPUT_EVENTS > 0 then
+		SC_RECENT_PLAYER_INPUT_EVENTS = SC_RECENT_PLAYER_INPUT_EVENTS - 1
+	end
 	SC_AuditInputSafe("unit-selection", "player="..tostring(playerID)..
 		" unit="..tostring(unitID)..
 		" hex="..tostring(hexX)..","..tostring(hexY)..
@@ -7037,10 +7279,13 @@ function SC_OnUnitSelectionAudit(playerID, unitID, hexX, hexY, unitType, isSelec
 end
 
 function SC_OnUnitSelectionClearedAudit()
-	if SC_RECENT_PLAYER_INPUT_EVENTS <= 0 then
+	local demoActive = SC_IsDemonstrationLoggingActive ~= nil and SC_IsDemonstrationLoggingActive()
+	if SC_RECENT_PLAYER_INPUT_EVENTS <= 0 and not demoActive then
 		return
 	end
-	SC_RECENT_PLAYER_INPUT_EVENTS = SC_RECENT_PLAYER_INPUT_EVENTS - 1
+	if SC_RECENT_PLAYER_INPUT_EVENTS > 0 then
+		SC_RECENT_PLAYER_INPUT_EVENTS = SC_RECENT_PLAYER_INPUT_EVENTS - 1
+	end
 	SC_AuditInputSafe("unit-selection-cleared", "")
 end
 
@@ -7068,11 +7313,45 @@ function SC_AuditControlCallback(name, callback)
 	end
 end
 
+function SC_DemoLogArgs(category, eventName, ...)
+	if not SC_IsDemonstrationLoggingActive() then
+		return
+	end
+	local parts = {"event="..tostring(eventName)}
+	for i = 1, select("#", ...), 1 do
+		table.insert(parts, "a"..tostring(i).."="..SC_SanitizeDemoText(select(i, ...)))
+	end
+	SC_DemoLog(category, table.concat(parts, " "))
+end
+
+function SC_RegisterDemoEvent(sourceTable, eventName, category)
+	if sourceTable == nil or eventName == nil or sourceTable[eventName] == nil or sourceTable[eventName].Add == nil then
+		return false
+	end
+	local ok = pcall(function()
+		sourceTable[eventName].Add(function(...)
+			SC_DemoLogArgs(category or "event", eventName, ...)
+		end)
+	end)
+	return ok
+end
+
 if ContextPtr ~= nil and ContextPtr.SetInputHandler ~= nil then
 	ContextPtr:SetInputHandler(SC_InputAuditHandler)
 end
 
 if Events ~= nil then
+	SC_RegisterDemoEvent(Events, "SerialEventUnitCreated", "unitEvent")
+	SC_RegisterDemoEvent(Events, "SerialEventUnitDestroyed", "unitEvent")
+	SC_RegisterDemoEvent(Events, "SerialEventUnitMoveToHexes", "unitEvent")
+	SC_RegisterDemoEvent(Events, "SerialEventUnitSetDamage", "unitEvent")
+	SC_RegisterDemoEvent(Events, "SerialEventCityCreated", "cityEvent")
+	SC_RegisterDemoEvent(Events, "SerialEventCityDestroyed", "cityEvent")
+	SC_RegisterDemoEvent(Events, "SerialEventCityInfoDirty", "cityEvent")
+	SC_RegisterDemoEvent(Events, "SerialEventHexCultureChanged", "mapEvent")
+	SC_RegisterDemoEvent(Events, "WarStateChanged", "diplomacy")
+	SC_RegisterDemoEvent(Events, "ResearchCompleted", "research")
+	SC_RegisterDemoEvent(Events, "TechAcquired", "research")
 	if Events.UnitSelectionChanged ~= nil then
 		pcall(function() Events.UnitSelectionChanged.Add(SC_OnUnitSelectionAudit) end)
 	end
@@ -7088,6 +7367,22 @@ if Events ~= nil then
 	if Events.SerialEventGameMessagePopupProcessed ~= nil then
 		pcall(function() Events.SerialEventGameMessagePopupProcessed.Add(SC_OnPopupProcessedAudit) end)
 	end
+end
+
+if GameEvents ~= nil then
+	SC_RegisterDemoEvent(GameEvents, "UnitSetXY", "unitEvent")
+	SC_RegisterDemoEvent(GameEvents, "UnitCreated", "unitEvent")
+	SC_RegisterDemoEvent(GameEvents, "UnitPrekill", "unitEvent")
+	SC_RegisterDemoEvent(GameEvents, "UnitKilledInCombat", "unitEvent")
+	SC_RegisterDemoEvent(GameEvents, "UnitPromoted", "unitEvent")
+	SC_RegisterDemoEvent(GameEvents, "CityFounded", "cityEvent")
+	SC_RegisterDemoEvent(GameEvents, "CityCaptureComplete", "cityEvent")
+	SC_RegisterDemoEvent(GameEvents, "CityTrained", "cityEvent")
+	SC_RegisterDemoEvent(GameEvents, "TeamSetHasTech", "research")
+	SC_RegisterDemoEvent(GameEvents, "PlayerAdoptPolicy", "policy")
+	SC_RegisterDemoEvent(GameEvents, "PlayerAdoptPolicyBranch", "policy")
+	SC_RegisterDemoEvent(GameEvents, "PlayerGoldenAge", "playerEvent")
+	SC_RegisterDemoEvent(GameEvents, "PlayerDoneTurn", "turn")
 end
 
 if Controls ~= nil then
