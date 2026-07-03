@@ -3,7 +3,7 @@
 
 include("StrategicCommand_Config.lua")
 
-local SC_VERSION = "1.28"
+local SC_VERSION = "1.29"
 local SC_LOAD_TURN = -1
 local SC_SAVE_DATA = nil
 local SC_TAKEOVER_SAVE_KEY = "SC_TAKEOVER_REMAINING"
@@ -22,6 +22,7 @@ SC_TACTICAL_ORDERED_THIS_TURN = {}
 SC_TACTICAL_NO_TARGET_THIS_TURN = {}
 SC_TACTICAL_QUEUED_THIS_TURN = {}
 SC_ASSAULT_SUPPORT_CACHE_THIS_TURN = {}
+SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN = {}
 SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
 SC_DIRECT_PUSH_FAILED_THIS_TURN = {}
@@ -1843,6 +1844,27 @@ function SC_IsAssaultCaptureRole(role)
 		or role == "naval_melee"
 end
 
+function SC_CanActAsCityCaptureUnit(unit, unitInfo, role)
+	if SC_IsAssaultCaptureRole(role) then
+		return true
+	end
+	unitInfo = unitInfo or SC_GetUnitInfo(unit)
+	if unitInfo == nil or unitInfo.Domain ~= "DOMAIN_SEA" then
+		return false
+	end
+	if role ~= "missile_carrier" and role ~= "naval_ranged" then
+		return false
+	end
+	local unitType = unitInfo.Type or ""
+	return SC_TextHas(unitType, "052D")
+		or SC_TextHas(unitType, "DESTROYER")
+		or SC_TextHas(unitType, "KIROV")
+		or SC_TextHas(unitType, "CRUISER")
+		or SC_TextHas(unitType, "BATTLECRUISER")
+		or SC_TextHas(unitType, "BATTLESHIP")
+		or SC_TextHas(unitType, "DREADNOUGHT")
+end
+
 function SC_IsRangedSupportRole(role)
 	return role == "missile_carrier"
 		or role == "naval_ranged"
@@ -1863,6 +1885,65 @@ function SC_GetCityDamageInfo(city)
 		ratio = math.max(0, math.min(1.5, damage / maxHP))
 	end
 	return damage, maxHP, ratio
+end
+
+function SC_IsCityReadyForCapture(city)
+	if city == nil then
+		return false
+	end
+	local _, cityMaxHP, cityDamageRatio = SC_GetCityDamageInfo(city)
+	return cityMaxHP ~= nil and cityMaxHP > 0 and cityDamageRatio >= SC_GetConfig("CityCaptureReadyDamageRatio", 0.72)
+end
+
+function SC_GetRangeTargetStrikeKey(plot, targetKind, bucket)
+	if plot == nil then
+		return nil
+	end
+	local plotID = nil
+	pcall(function() plotID = plot:GetPlotIndex() end)
+	if plotID == nil then
+		pcall(function() plotID = tostring(plot:GetX())..","..tostring(plot:GetY()) end)
+	end
+	if plotID == nil then
+		return nil
+	end
+	return tostring(targetKind or "target").."|"..tostring(plotID).."|"..tostring(bucket or "all")
+end
+
+function SC_GetRangeRoleStrikeBucket(role)
+	if role == "missile" then
+		return "missile"
+	end
+	if role == "carrier_air" or role == "bomber" or role == "fighter" then
+		return "air"
+	end
+	if role == "missile_carrier" or role == "naval_ranged" or role == "submarine" then
+		return "ship"
+	end
+	if role == "siege" or role == "land_ranged" then
+		return "land"
+	end
+	return "other"
+end
+
+function SC_GetRangeTargetStrikeCount(plot, targetKind, bucket)
+	local key = SC_GetRangeTargetStrikeKey(plot, targetKind, bucket)
+	if key == nil then
+		return 0
+	end
+	return SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN[key] or 0
+end
+
+function SC_RecordRangeTargetStrike(plot, role, targetKind)
+	local kind = targetKind or "target"
+	local totalKey = SC_GetRangeTargetStrikeKey(plot, kind, "all")
+	if totalKey ~= nil then
+		SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN[totalKey] = (SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN[totalKey] or 0) + 1
+	end
+	local bucketKey = SC_GetRangeTargetStrikeKey(plot, kind, SC_GetRangeRoleStrikeBucket(role))
+	if bucketKey ~= nil then
+		SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN[bucketKey] = (SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN[bucketKey] or 0) + 1
+	end
 end
 
 function SC_IsCoastalAssaultPlot(plot)
@@ -1904,7 +1985,7 @@ function SC_CountFriendlyRoleNearPlot(player, targetPlot, radius, roleKind, maxC
 						if nearbyUnit ~= nil and SC_GetSafeNumber(function() return nearbyUnit:GetOwner() end, -1) == playerID then
 							local nearbyInfo = SC_GetUnitInfo(nearbyUnit)
 							local nearbyRole = SC_GetUnitRole(nearbyUnit, nearbyInfo)
-							if (roleKind == "capture" and SC_IsAssaultCaptureRole(nearbyRole))
+							if (roleKind == "capture" and SC_CanActAsCityCaptureUnit(nearbyUnit, nearbyInfo, nearbyRole))
 								or (roleKind == "support" and SC_IsRangedSupportRole(nearbyRole)) then
 								count = count + 1
 								if count >= maxCount then
@@ -2003,6 +2084,9 @@ local function SC_ScoreRangeTarget(player, unit, role, unitPlot, targetPlot, ene
 	end
 	if enemyCity ~= nil then
 		local cityDamage, cityMaxHP, cityDamageRatio = SC_GetCityDamageInfo(enemyCity)
+		local cityStrikeCount = SC_GetRangeTargetStrikeCount(targetPlot, "city", "all")
+		local roleStrikeBucket = SC_GetRangeRoleStrikeBucket(role)
+		local roleStrikeCount = SC_GetRangeTargetStrikeCount(targetPlot, "city", roleStrikeBucket)
 		score = score + 700
 		SC_AddScoreReason(reasons, "city", 700)
 		local cityDamageScore = cityDamage * 4
@@ -2049,6 +2133,25 @@ local function SC_ScoreRangeTarget(player, unit, role, unitPlot, targetPlot, ene
 		if SC_GetSafeNumber(function() return enemyCity:IsCapital() and 1 or 0 end, 0) > 0 then
 			score = score + 120
 			SC_AddScoreReason(reasons, "capital", 120)
+		end
+		if cityDamageRatio >= SC_GetConfig("CityCaptureReadyDamageRatio", 0.72) and cityStrikeCount >= 2 then
+			local saturationPenalty = 900 + cityStrikeCount * 220
+			if roleStrikeBucket == "missile" or roleStrikeBucket == "air" then
+				saturationPenalty = saturationPenalty + 500
+			end
+			score = score - saturationPenalty
+			SC_AddScoreReason(reasons, "citySaturated", -saturationPenalty)
+		end
+		if cityStrikeCount >= SC_GetConfig("MaxRangeStrikesPerCityPerTurn", 8) then
+			score = score - 3500
+			SC_AddScoreReason(reasons, "cityStrikeCap", -3500)
+		end
+		if roleStrikeBucket == "missile" and roleStrikeCount >= SC_GetConfig("MaxMissileStrikesPerCityPerTurn", 2) then
+			score = score - 2800
+			SC_AddScoreReason(reasons, "missileCityCap", -2800)
+		elseif roleStrikeBucket == "air" and roleStrikeCount >= SC_GetConfig("MaxAirStrikesPerCityPerTurn", 4) then
+			score = score - 2000
+			SC_AddScoreReason(reasons, "airCityCap", -2000)
 		end
 	end
 	return score, SC_JoinScoreReasons(reasons)
@@ -2191,6 +2294,7 @@ local function SC_AutomateLocalDefense(player, atWar)
 							end
 							if targetPlot ~= nil and strikeDone then
 								local newCount = SC_RecordTacticalAction(unitKey)
+								SC_RecordRangeTargetStrike(targetPlot, role, targetStats and targetStats.bestKind or nil)
 								local label = "queued"
 								if SC_IsStrikeStatusFired(strikeStatus) then
 									label = "fired"
@@ -3112,17 +3216,24 @@ local function SC_ChooseCityProduction(player, city, atWar, reservedOrders)
 		return buildingInfo and buildingInfo.Type or "BUILDING", reserveKey
 	end
 	
-	local unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, false, reservedOrders)
-	if unitID ~= nil and SC_PushCityOrder(city, OrderTypes.ORDER_TRAIN, unitID) then
-		local unitInfo = GameInfo.Units[unitID]
-		local reserveKey = "U:"..tostring(unitID)
-		if SC_GetConfig("DebugCityProduction", true) then
-			SC_Debug("cityProduction choose city="..tostring(cityName).." category=fallback-unit item="..tostring(unitInfo and unitInfo.Type or "UNIT").." role="..tostring(unitRole).." score="..tostring(unitScore).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=no-building queue="..tostring(queueLength))
+	local unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = nil, nil, nil, nil, nil, nil, nil
+	local warProfile = SC_GetConfig("WarProfile", "ADVANCE")
+	local allowFallbackUnit = buildMilitary or production == "MILITARY" or production == "AIRSEA" or warProfile == "ASSAULT" or warProfile == "NAVAL"
+	if allowFallbackUnit then
+		unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, false, reservedOrders)
+		if unitID ~= nil and SC_PushCityOrder(city, OrderTypes.ORDER_TRAIN, unitID) then
+			local unitInfo = GameInfo.Units[unitID]
+			local reserveKey = "U:"..tostring(unitID)
+			if SC_GetConfig("DebugCityProduction", true) then
+				SC_Debug("cityProduction choose city="..tostring(cityName).." category=fallback-unit item="..tostring(unitInfo and unitInfo.Type or "UNIT").." role="..tostring(unitRole).." score="..tostring(unitScore).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=no-building militaryFallback=true queue="..tostring(queueLength))
+			end
+			return unitInfo and unitInfo.Type or "UNIT", reserveKey
 		end
-		return unitInfo and unitInfo.Type or "UNIT", reserveKey
-	end
-	if unitID == nil and SC_GetConfig("DebugCityProduction", true) then
-		SC_Debug("cityProduction fallback-no-unit city="..tostring(cityName).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=no-viable-fallback-unit")
+		if unitID == nil and SC_GetConfig("DebugCityProduction", true) then
+			SC_Debug("cityProduction fallback-no-unit city="..tostring(cityName).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=no-viable-fallback-unit")
+		end
+	elseif SC_GetConfig("DebugCityProduction", true) then
+		SC_Debug("cityProduction fallback-skip city="..tostring(cityName).." reason=non-military-profile profile="..tostring(production).." warProfile="..tostring(warProfile))
 	end
 	
 	local processType = "PROCESS_WEALTH"
@@ -3846,6 +3957,7 @@ local function SC_ScoreStrategicTarget(player, unit, role, unitPlot, targetPlot,
 	local score = 1000 - distance * 12
 	local reasons = {"dist"..tostring(distance)}
 	local coastalTarget = SC_IsCoastalAssaultPlot(targetPlot)
+	local unitInfo = SC_GetUnitInfo(unit)
 	if enemyCity ~= nil then
 		local cityDamage, cityMaxHP, cityDamageRatio = SC_GetCityDamageInfo(enemyCity)
 		score = score + 260
@@ -3866,7 +3978,7 @@ local function SC_ScoreStrategicTarget(player, unit, role, unitPlot, targetPlot,
 			score = score + focusScore
 			SC_AddScoreReason(reasons, "fleetNear", focusScore)
 		end
-		if role == "fast_assault" or role == "assault" or role == "naval_melee" then
+		if SC_CanActAsCityCaptureUnit(unit, unitInfo, role) then
 			local captureScore = 220
 			if cityDamageRatio >= 0.65 then
 				captureScore = captureScore + 760
@@ -3905,6 +4017,10 @@ local function SC_ScoreStrategicTarget(player, unit, role, unitPlot, targetPlot,
 			end
 			score = score + subScore
 			SC_AddScoreReason(reasons, "subCoast", subScore)
+			if cityDamageRatio >= SC_GetConfig("CityCaptureReadyDamageRatio", 0.72) then
+				score = score - 360
+				SC_AddScoreReason(reasons, "subNoCapture", -360)
+			end
 		elseif role == "siege" or role == "land_ranged" then
 			score = score + 160
 			SC_AddScoreReason(reasons, "rangedSiege", 160)
@@ -3993,7 +4109,7 @@ local function SC_FindStrategicTarget(player, unit)
 end
 
 function SC_IsStrategicRangedMoveRole(role)
-	return role == "carrier" or role == "missile_carrier" or role == "naval_ranged" or role == "siege" or role == "land_ranged"
+	return role == "carrier" or role == "missile_carrier" or role == "naval_ranged" or role == "submarine" or role == "siege" or role == "land_ranged"
 end
 
 function SC_GetUnitRangeValue(unit, unitInfo)
@@ -4490,6 +4606,85 @@ function SC_FindStandoffMovePlot(player, unit, role, targetPlot, reserved, stats
 	return bestPlot
 end
 
+function SC_CanUnitMoveIntoPlotForCapture(unit, plot)
+	if unit == nil or plot == nil then
+		return false
+	end
+	local ok, canMove = pcall(function() return unit:CanMoveInto(plot, true) end)
+	if ok and canMove then
+		return true
+	end
+	ok, canMove = pcall(function() return unit:CanMoveInto(plot, 1) end)
+	if ok and canMove then
+		return true
+	end
+	ok, canMove = pcall(function() return unit:CanMoveInto(plot, 0) end)
+	if ok and canMove then
+		return true
+	end
+	ok, canMove = pcall(function() return unit:CanMoveInto(plot) end)
+	return ok and canMove
+end
+
+function SC_FindCityCaptureMovePlot(player, unit, role, targetPlot, reserved, stats)
+	if player == nil or unit == nil or targetPlot == nil then
+		return nil, "capture-missing"
+	end
+	local sourcePlot = unit:GetPlot()
+	local unitInfo = SC_GetUnitInfo(unit)
+	if sourcePlot == nil or unitInfo == nil then
+		return nil, "capture-no-source"
+	end
+	local layer = SC_GetUnitStackLayer(unit)
+	local targetDistanceFromSource = Map.PlotDistance(sourcePlot:GetX(), sourcePlot:GetY(), targetPlot:GetX(), targetPlot:GetY())
+	if SC_CanUnitMoveIntoPlotForCapture(unit, targetPlot)
+		and not SC_IsMovePlotReserved(reserved, targetPlot, layer)
+		and not SC_PlotHasOwnStackLayer(player, targetPlot, layer, unit) then
+		return targetPlot, "capture-direct"
+	end
+	local bestPlot = nil
+	local bestScore = -999999
+	local searchRadius = SC_GetConfig("CityCaptureStagingSearchRadius", 2)
+	for radius = 1, searchRadius, 1 do
+		for dx = -radius, radius, 1 do
+			for dy = -radius, radius, 1 do
+				local plot = SC_GetNearbyPlot(targetPlot:GetX(), targetPlot:GetY(), dx, dy, radius)
+				if plot ~= nil and plot ~= targetPlot then
+					local targetDistance = Map.PlotDistance(plot:GetX(), plot:GetY(), targetPlot:GetX(), targetPlot:GetY())
+					if targetDistance >= 1 and targetDistance <= searchRadius then
+						local usable, moveDistance = SC_MoveCandidateIsUsable(player, unit, unitInfo, sourcePlot, plot, layer, reserved, nil, stats)
+						if usable and moveDistance ~= nil and moveDistance > 0 then
+							local score = 1200 - moveDistance * 8 - targetDistance * 90
+							if unitInfo.Domain == "DOMAIN_SEA" and SC_IsCoastalAssaultPlot(plot) then
+								score = score + 160
+							elseif unitInfo.Domain == "DOMAIN_LAND" and SC_GetSafeNumber(function() return plot:IsWater() and 1 or 0 end, 0) <= 0 then
+								score = score + 120
+							end
+							if targetDistanceFromSource <= 3 then
+								score = score + 180
+							end
+							local owner = SC_GetSafeNumber(function() return plot:GetOwner() end, -1)
+							if owner == player:GetID() then
+								score = score + 90
+							elseif owner < 0 then
+								score = score + 30
+							end
+							if score > bestScore then
+								bestScore = score
+								bestPlot = plot
+							end
+						end
+					end
+				end
+			end
+		end
+		if bestPlot ~= nil then
+			return bestPlot, "capture-stage"
+		end
+	end
+	return nil, "capture-no-plot"
+end
+
 function SC_IsWaterOrCoastalStrategicPlot(plot)
 	if plot == nil then
 		return false
@@ -4560,7 +4755,20 @@ function SC_FindStrategicMovePlan(player, unit, reservedMovePlots)
 		end
 		local movePlot = targetPlot
 		local mode = "direct"
-		if SC_GetConfig("EnableRangedReposition", true) and SC_IsStrategicRangedMoveRole(role) then
+		local captureMover = kind == "city" and enemyCity ~= nil and SC_CanActAsCityCaptureUnit(unit, unitInfo, role)
+		if captureMover and SC_IsCityReadyForCapture(enemyCity) then
+			local captureMode = nil
+			movePlot, captureMode = SC_FindCityCaptureMovePlot(player, unit, role, targetPlot, reservedMovePlots, stats)
+			if movePlot ~= nil then
+				mode = captureMode or "capture"
+				targetScore = targetScore + 720
+				targetReason = tostring(targetReason or "base")..",captureFinish:720"
+			elseif SC_GetConfig("EnableRangedReposition", true) and SC_IsStrategicRangedMoveRole(role) then
+				movePlot = SC_FindStandoffMovePlot(player, unit, role, targetPlot, reservedMovePlots, stats)
+				mode = "standoff"
+				targetReason = tostring(targetReason or "base")..",captureFallbackStandoff"
+			end
+		elseif SC_GetConfig("EnableRangedReposition", true) and SC_IsStrategicRangedMoveRole(role) then
 			movePlot = SC_FindStandoffMovePlot(player, unit, role, targetPlot, reservedMovePlots, stats)
 			mode = "standoff"
 		end
@@ -4690,7 +4898,7 @@ local function SC_AutomateStrategicMovement(player, atWar)
 								" "..SC_GetStrategicPlanStatsDebug(planStats))
 							local ok = SC_TryMoveMission(unit, movePlot, "strategic")
 							if ok then
-								if mode == "standoff" then
+								if mode == "standoff" or string.sub(tostring(mode), 1, 7) == "capture" then
 									SC_ReserveMovePlot(reservedMovePlots, movePlot, SC_GetUnitStackLayer(unit))
 								end
 								if unitKey ~= nil then
@@ -5341,6 +5549,7 @@ local function SC_AutomateFinalUnitOrders(player, atWar)
 					done, strikeStatus = SC_RangeStrike(unit, targetPlot)
 					if done then
 						local newCount = SC_RecordTacticalAction(unitKey)
+						SC_RecordRangeTargetStrike(targetPlot, role, targetStats and targetStats.bestKind or nil)
 						local label = "queued"
 						if SC_IsStrikeStatusFired(strikeStatus) then
 							label = "fired"
@@ -6153,6 +6362,7 @@ local function SC_ResetTakeoverPassCounterForTurn()
 		SC_TACTICAL_NO_TARGET_THIS_TURN = {}
 		SC_TACTICAL_QUEUED_THIS_TURN = {}
 		SC_ASSAULT_SUPPORT_CACHE_THIS_TURN = {}
+		SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN = {}
 		SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 		SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
 		SC_DIRECT_PUSH_FAILED_THIS_TURN = {}
@@ -7668,7 +7878,51 @@ if Events ~= nil then
 	end
 end
 
+local function SC_OnCityCaptureCompleteStrategic(oldOwner, isCapital, x, y, newOwner, pop, conquest)
+	local ok, err = pcall(function()
+		local activeID = -1
+		pcall(function() activeID = Game.GetActivePlayer() end)
+		if newOwner ~= activeID or Map == nil then
+			return
+		end
+		local plot = Map.GetPlot(x, y)
+		if plot == nil then
+			return
+		end
+		local city = nil
+		pcall(function() city = plot:GetPlotCity() end)
+		if city == nil then
+			return
+		end
+		local damage, maxHP, ratio = SC_GetCityDamageInfo(city)
+		if maxHP == nil or maxHP <= 0 then
+			return
+		end
+		local targetDamage = math.floor(maxHP * SC_GetConfig("CapturedCityMaxDamageRatio", 0.45))
+		if damage <= targetDamage then
+			SC_Debug("capturedCity secure-skip plot="..SC_GetPlotDebug(plot).." damage="..tostring(damage).."/"..tostring(maxHP).." ratio="..tostring(ratio))
+			return
+		end
+		local fixed = false
+		local setOk = pcall(function() city:SetDamage(targetDamage) end)
+		if setOk then
+			fixed = true
+		else
+			local change = targetDamage - damage
+			local changeOk = pcall(function() city:ChangeDamage(change) end)
+			fixed = changeOk
+		end
+		SC_Debug("capturedCity secure plot="..SC_GetPlotDebug(plot).." oldOwner=P"..tostring(oldOwner).." newOwner=P"..tostring(newOwner).." damage="..tostring(damage).."->"..tostring(targetDamage).." maxHP="..tostring(maxHP).." fixed="..SC_BoolText(fixed))
+	end)
+	if not ok then
+		SC_Debug("capturedCity secure-error err="..tostring(err))
+	end
+end
+
 if GameEvents ~= nil then
+	if GameEvents.CityCaptureComplete ~= nil then
+		pcall(function() GameEvents.CityCaptureComplete.Add(SC_OnCityCaptureCompleteStrategic) end)
+	end
 	SC_RegisterDemoEvent(GameEvents, "UnitSetXY", "unitEvent")
 	SC_RegisterDemoEvent(GameEvents, "UnitCreated", "unitEvent")
 	SC_RegisterDemoEvent(GameEvents, "UnitPrekill", "unitEvent")

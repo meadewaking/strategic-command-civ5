@@ -35,6 +35,12 @@ SC_CONFIG.MaxAirTacticalActionsPerUnitPerTurn = 5
 SC_CONFIG.MaxMissileTacticalActionsPerUnitPerTurn = 2
 SC_CONFIG.MaxNavalTacticalActionsPerUnitPerTurn = 4
 SC_CONFIG.MaxLandRangedTacticalActionsPerUnitPerTurn = 3
+SC_CONFIG.MaxRangeStrikesPerCityPerTurn = 8
+SC_CONFIG.MaxMissileStrikesPerCityPerTurn = 2
+SC_CONFIG.MaxAirStrikesPerCityPerTurn = 4
+SC_CONFIG.CityCaptureReadyDamageRatio = 0.72
+SC_CONFIG.CapturedCityMaxDamageRatio = 0.45
+SC_CONFIG.CityCaptureStagingSearchRadius = 2
 
 SC_CONFIG.AutoResearch = true
 SC_CONFIG.AutoPolicy = true
