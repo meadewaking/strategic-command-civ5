@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Mod id="73d32fc5-d869-4b86-8a3d-8800c08407fc" version="1">
+  <Properties>
+    <Name>战略指挥部</Name>
+    <Stability>Alpha</Stability>
+    <Teaser>后期高层指挥自动化。</Teaser>
+    <Description>战略指挥部用于减少后期微操：自动处理城市生产队列、科研、政策、单位升级、单位晋升、伤兵治疗、本土防御、城市炮击、战略机动、外交打断和部分提示弹窗，并定期向玩家发送全国简报。</Description>
+    <Authors>meade, Codex</Authors>
+    <SpecialThanks>为 Super Power Clash of Civilizations 后期游戏体验制作。</SpecialThanks>
+    <HideSetupGame>0</HideSetupGame>
+    <AffectsSavedGames>0</AffectsSavedGames>
+    <MinCompatibleSaveVersion>0</MinCompatibleSaveVersion>
+    <SupportsSinglePlayer>1</SupportsSinglePlayer>
+    <SupportsMultiplayer>0</SupportsMultiplayer>
+    <SupportsHotSeat>0</SupportsHotSeat>
+    <SupportsMac>1</SupportsMac>
+    <ReloadAudioSystem>0</ReloadAudioSystem>
+    <ReloadLandmarkSystem>0</ReloadLandmarkSystem>
+    <ReloadStrategicViewSystem>0</ReloadStrategicViewSystem>
+    <ReloadUnitSystem>0</ReloadUnitSystem>
+  </Properties>
+  <Dependencies>
+    <Dlc id="8871E748-29A4-4910-8C57-8C99E32D0167" minversion="0" maxversion="999" />
+    <Dlc id="0E3751A1-F840-4e1b-9706-519BF484E59D" minversion="0" maxversion="999" />
+    <Dlc id="6DA07636-4123-4018-B643-6575B4EC336B" minversion="0" maxversion="999" />
+  </Dependencies>
+  <Files>
+    <File md5="C43AC1BFD4C6D60BEEF68CF2C273E49A" import="1">Lua/StrategicCommand_Config.lua</File>
+    <File md5="999DF475C66A52377F444B74EC00216F" import="1">Lua/StrategicCommand.lua</File>
+    <File md5="E11C124E11C669A03347406D2C17F882" import="1">Lua/StrategicCommand.xml</File>
+    <File md5="6020BEC31AAA8B498CB3B2FD6DCDCD3F" import="0">Docs/README.txt</File>
+  </Files>
+  <EntryPoints>
+    <EntryPoint type="InGameUIAddin" file="Lua/StrategicCommand.xml">
+      <Name>战略指挥部</Name>
+      <Description>高层指挥自动化层</Description>
+    </EntryPoint>
+  </EntryPoints>
+</Mod>

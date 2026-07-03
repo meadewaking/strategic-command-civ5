@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Context Font="TwCenMT16" FontStyle="Shadow" ColorSet="Beige_Black_Alpha">
+	<GridButton Anchor="L,T" Offset="6,118" Size="70,28" Style="SmallButton" String="战略" ID="CommandButton" ToolTip="战略托管"/>
+	
+	<Grid Anchor="L,T" Offset="6,150" Size="352,574" Style="Grid9DetailFive140" Padding="12,14" ConsumeMouse="1" Hidden="1" ID="MainPanel">
+		<Label Anchor="C,T" Offset="0,6" String="战略托管" Font="TwCenMT22" ColorSet="Beige_Black_Alpha" FontStyle="Shadow"/>
+		<Label Anchor="L,T" Offset="16,38" Size="320,56" WrapWidth="320" String="未接管" Font="TwCenMT14" ColorSet="Beige_Black_Alpha" FontStyle="Shadow" ID="StatusLabel"/>
+		<Label Anchor="L,T" Offset="16,96" String="接管回合" Font="TwCenMT16" ColorSet="Beige_Black_Alpha" FontStyle="Shadow"/>
+		
+		<GridButton Anchor="L,T" Offset="16,124" Size="72,28" Style="SmallButton" String="5回合" ID="Takeover5Button"/>
+		<GridButton Anchor="L,T" Offset="96,124" Size="72,28" Style="SmallButton" String="10回合" ID="Takeover10Button"/>
+		<GridButton Anchor="L,T" Offset="176,124" Size="72,28" Style="SmallButton" String="20回合" ID="Takeover20Button"/>
+		<GridButton Anchor="L,T" Offset="256,124" Size="72,28" Style="SmallButton" String="50回合" ID="Takeover50Button"/>
+		
+		<GridButton Anchor="L,T" Offset="16,156" Size="152,24" Style="BaseButton" String="外交：均衡" ID="DiplomacyProfileButton"/>
+		<GridButton Anchor="R,T" Offset="16,156" Size="152,24" Style="BaseButton" String="经济：均衡" ID="EconomyProfileButton"/>
+		<GridButton Anchor="L,T" Offset="16,184" Size="152,24" Style="BaseButton" String="建设：基建" ID="BuildProfileButton"/>
+		<GridButton Anchor="R,T" Offset="16,184" Size="152,24" Style="BaseButton" String="开发：自动" ID="DevelopmentProfileButton"/>
+		<GridButton Anchor="L,T" Offset="16,212" Size="152,24" Style="BaseButton" String="生产：建筑" ID="ProductionProfileButton"/>
+		<GridButton Anchor="R,T" Offset="16,212" Size="152,24" Style="BaseButton" String="战争：推进" ID="WarProfileButton"/>
+		<GridButton Anchor="L,T" Offset="16,240" Size="152,24" Style="BaseButton" String="占城：傀儡" ID="CapturedCityProfileButton"/>
+		<GridButton Anchor="R,T" Offset="16,240" Size="152,24" Style="BaseButton" String="伟人：保留" ID="GreatPersonProfileButton"/>
+		<GridButton Anchor="L,T" Offset="16,268" Size="152,24" Style="BaseButton" String="宗教：产能" ID="ReligionProfileButton"/>
+		<GridButton Anchor="R,T" Offset="16,268" Size="152,24" Style="BaseButton" String="贸易：均衡" ID="TradeProfileButton"/>
+		
+		<Label Anchor="L,T" Offset="16,298" Size="320,18" String="预设选项" Font="TwCenMT16" ColorSet="Beige_Black_Alpha" FontStyle="Shadow" ID="ProfileListTitle"/>
+		<GridButton Anchor="L,T" Offset="16,320" Size="152,24" Style="SmallButton" String="选项一" ID="ProfileOption1Button"/>
+		<GridButton Anchor="R,T" Offset="16,320" Size="152,24" Style="SmallButton" String="选项二" ID="ProfileOption2Button"/>
+		<GridButton Anchor="L,T" Offset="16,348" Size="152,24" Style="SmallButton" String="选项三" ID="ProfileOption3Button"/>
+		<GridButton Anchor="R,T" Offset="16,348" Size="152,24" Style="SmallButton" String="选项四" ID="ProfileOption4Button"/>
+		
+		<GridButton Anchor="L,T" Offset="16,386" Size="152,28" Style="BaseButton" String="立即执行" ID="RunOnceButton"/>
+		<GridButton Anchor="R,T" Offset="16,386" Size="152,28" Style="BaseButton" String="停止托管" ID="StopTakeoverButton"/>
+		<GridButton Anchor="L,T" Offset="16,422" Size="152,26" Style="SmallButton" String="自动结束：开" ID="AutoEndTurnButton"/>
+		<GridButton Anchor="R,T" Offset="16,422" Size="152,26" Style="SmallButton" String="弹窗：开" ID="PopupAutomationButton"/>
+		<GridButton Anchor="L,T" Offset="16,456" Size="152,26" Style="SmallButton" String="科技树" ID="OpenTechButton"/>
+		<GridButton Anchor="R,T" Offset="16,456" Size="152,26" Style="SmallButton" String="政策树" ID="OpenPolicyButton"/>
+		<GridButton Anchor="L,T" Offset="16,488" Size="312,26" Style="SmallButton" String="立即简报" ID="BriefButton"/>
+		
+		<Label Anchor="L,T" Offset="16,522" Size="320,38" WrapWidth="320" String="托管会处理城市、单位、弹窗、议会、宗教、考古、贸易路线，并在无阻塞时自动结束回合。" Font="TwCenMT14" ColorSet="Beige_Black_Alpha" FontStyle="Shadow" ID="HintLabel"/>
+		
+		<GridButton Anchor="C,B" Offset="0,20" Size="90,28" Style="SmallButton" String="关闭" ID="CloseButton"/>
+		
+		<GridButton Hidden="1" String="" ID="BalancedButton"/>
+		<GridButton Hidden="1" String="" ID="ScienceButton"/>
+		<GridButton Hidden="1" String="" ID="IndustryButton"/>
+		<GridButton Hidden="1" String="" ID="WarButton"/>
+		<GridButton Hidden="1" String="" ID="ResearchAutomationButton"/>
+		<GridButton Hidden="1" String="" ID="PolicyAutomationButton"/>
+		<GridButton Hidden="1" String="" ID="CityAutomationButton"/>
+		<GridButton Hidden="1" String="" ID="DefenseAutomationButton"/>
+		<GridButton Hidden="1" String="" ID="CityStrikeAutomationButton"/>
+		<GridButton Hidden="1" String="" ID="UpgradeAutomationButton"/>
+		<GridButton Hidden="1" String="" ID="PromoteAutomationButton"/>
+		<GridButton Hidden="1" String="" ID="HealAutomationButton"/>
+		<GridButton Hidden="1" String="" ID="MoveAutomationButton"/>
+		<GridButton Hidden="1" String="" ID="IdlePostureAutomationButton"/>
+		<Label Hidden="1" String="" ID="DoctrineLabel"/>
+		<Label Hidden="1" String="" ID="ResearchAutomationLabel"/>
+		<Label Hidden="1" String="" ID="CityAutomationLabel"/>
+		<Label Hidden="1" String="" ID="DefenseAutomationLabel"/>
+		<Label Hidden="1" String="" ID="CityStrikeAutomationLabel"/>
+		<Label Hidden="1" String="" ID="UpgradeAutomationLabel"/>
+		<Label Hidden="1" String="" ID="HealAutomationLabel"/>
+		<Label Hidden="1" String="" ID="IdlePostureAutomationLabel"/>
+	</Grid>
+</Context>

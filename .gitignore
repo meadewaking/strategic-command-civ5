@@ -1,0 +1,10 @@
+# Runtime/debug output
+*.log
+*.tmp
+*.bak
+
+# Windows/editor noise
+Thumbs.db
+Desktop.ini
+.vs/
+.vscode/
