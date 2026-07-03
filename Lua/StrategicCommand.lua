@@ -3,7 +3,7 @@
 
 include("StrategicCommand_Config.lua")
 
-local SC_VERSION = "1.22"
+local SC_VERSION = "1.23"
 local SC_LOAD_TURN = -1
 local SC_SAVE_DATA = nil
 local SC_TAKEOVER_SAVE_KEY = "SC_TAKEOVER_REMAINING"
@@ -373,7 +373,7 @@ local function SC_SendUnitCommand(unit, commandType, data1, data2)
 	return ok
 end
 
-local function SC_TryMoveMission(unit, plot, reason)
+local function SC_TryMoveMission(unit, plot, reason, requirePlotChange)
 	if unit == nil or plot == nil then
 		return false
 	end
@@ -406,13 +406,14 @@ local function SC_TryMoveMission(unit, plot, reason)
 		needsOrder = SC_UnitNeedsOrder(unit)
 	end
 	local changedPlot = beforeIndex ~= nil and afterIndex ~= nil and beforeIndex ~= afterIndex
-	local accepted = changedPlot or not needsOrder
+	local accepted = changedPlot or (not requirePlotChange and not needsOrder)
 	if SC_GetConfig("DebugUnitCommands", true) then
 		SC_Debug("moveMission unit="..SC_GetUnitDebugLabel(unit)..
 			" reason="..tostring(reason)..
 			" target="..SC_GetPlotDebug(plot)..
 			" accepted="..SC_BoolText(accepted)..
 			" changedPlot="..SC_BoolText(changedPlot)..
+			" requirePlotChange="..SC_BoolText(requirePlotChange == true)..
 			" state="..SC_GetUnitOrderDebug(unit))
 	end
 	return accepted
@@ -3452,16 +3453,28 @@ local function SC_AutomateStackedUnits(player)
 				end
 				if unitKey ~= nil and attemptCount >= maxAttempts then
 					SC_Debug("stacked turn-skip unit="..SC_GetUnitDebugLabel(unit).." attempts="..tostring(attemptCount).." plot="..SC_GetPlotDebug(stack.Plot))
+					if SC_UnitNeedsOrder ~= nil and SC_UnitNeedsOrder(unit) and SC_TryForceClearUnitOrder ~= nil and SC_TryForceClearUnitOrder(unit, "stacked-attempt-cap") then
+						moved = moved + 1
+						SC_Debug("stacked force-clear unit="..SC_GetUnitDebugLabel(unit).." reason=attempt-cap plot="..SC_GetPlotDebug(stack.Plot))
+					end
 				elseif SC_IsGreatPersonLike(SC_GetUnitInfo(unit)) then
 					if unitKey ~= nil then
 						SC_STACK_MOVE_ATTEMPTED_THIS_TURN[unitKey] = maxAttempts
 					end
 					SC_Debug("stacked great-person-skip unit="..SC_GetUnitDebugLabel(unit).." plot="..SC_GetPlotDebug(stack.Plot))
+					if SC_UnitNeedsOrder ~= nil and SC_UnitNeedsOrder(unit) and SC_TryForceClearUnitOrder ~= nil and SC_TryForceClearUnitOrder(unit, "stacked-great-person") then
+						moved = moved + 1
+						SC_Debug("stacked force-clear unit="..SC_GetUnitDebugLabel(unit).." reason=great-person plot="..SC_GetPlotDebug(stack.Plot))
+					end
 				elseif SC_IsTradeLike(SC_GetUnitInfo(unit)) then
 					if unitKey ~= nil then
 						SC_STACK_MOVE_ATTEMPTED_THIS_TURN[unitKey] = maxAttempts
 					end
 					SC_Debug("stacked trade-skip unit="..SC_GetUnitDebugLabel(unit).." plot="..SC_GetPlotDebug(stack.Plot))
+					if SC_UnitNeedsOrder ~= nil and SC_UnitNeedsOrder(unit) and SC_TryForceClearUnitOrder ~= nil and SC_TryForceClearUnitOrder(unit, "stacked-trade") then
+						moved = moved + 1
+						SC_Debug("stacked force-clear unit="..SC_GetUnitDebugLabel(unit).." reason=trade plot="..SC_GetPlotDebug(stack.Plot))
+					end
 				elseif unit ~= nil and unit:CanMove() then
 					if unitKey ~= nil then
 						SC_STACK_MOVE_ATTEMPTED_THIS_TURN[unitKey] = attemptCount + 1
@@ -3485,7 +3498,7 @@ local function SC_AutomateStackedUnits(player)
 							end
 							break
 						end
-						if SC_TryMoveMission(unit, movePlot, "stacked") then
+						if SC_TryMoveMission(unit, movePlot, "stacked", true) then
 							local reserveKey = tostring(SC_GetPlotIndexSafe(movePlot)).."|"..SC_GetUnitStackLayer(unit)
 							reserved[reserveKey] = true
 							if unitKey ~= nil then
@@ -3494,6 +3507,16 @@ local function SC_AutomateStackedUnits(player)
 							moved = moved + 1
 							movedThisUnit = true
 							SC_Debug("stacked move unit="..SC_GetUnitDebugLabel(unit).." from="..SC_GetPlotDebug(stack.Plot).." to="..SC_GetPlotDebug(movePlot).." layer="..tostring(stack.Layer))
+							break
+						end
+						SC_Debug("stacked stationary-reject unit="..SC_GetUnitDebugLabel(unit).." attempt="..tostring(candidateAttempt).." from="..SC_GetPlotDebug(stack.Plot).." to="..SC_GetPlotDebug(movePlot).." state="..SC_GetUnitOrderDebug(unit))
+						if SC_UnitNeedsOrder ~= nil and not SC_UnitNeedsOrder(unit) then
+							if unitKey ~= nil then
+								SC_STACK_MOVE_ATTEMPTED_THIS_TURN[unitKey] = maxAttempts
+							end
+							moved = moved + 1
+							movedThisUnit = true
+							SC_Debug("stacked queued-stationary unit="..SC_GetUnitDebugLabel(unit).." from="..SC_GetPlotDebug(stack.Plot).." to="..SC_GetPlotDebug(movePlot).." layer="..tostring(stack.Layer))
 							break
 						end
 						local rejectedIndex = SC_GetPlotIndexSafe(movePlot)
@@ -3505,11 +3528,25 @@ local function SC_AutomateStackedUnits(player)
 					if movedThisUnit and moved >= maxMoves then
 						return moved
 					end
+					if not movedThisUnit and SC_UnitNeedsOrder ~= nil and SC_UnitNeedsOrder(unit) and SC_TryForceClearUnitOrder ~= nil and SC_TryForceClearUnitOrder(unit, "stacked-no-move") then
+						if unitKey ~= nil then
+							SC_STACK_MOVE_ATTEMPTED_THIS_TURN[unitKey] = maxAttempts
+						end
+						moved = moved + 1
+						SC_Debug("stacked force-clear unit="..SC_GetUnitDebugLabel(unit).." reason=no-move plot="..SC_GetPlotDebug(stack.Plot))
+						if moved >= maxMoves then
+							return moved
+						end
+					end
 				else
 					if unitKey ~= nil then
 						SC_STACK_MOVE_ATTEMPTED_THIS_TURN[unitKey] = maxAttempts
 					end
 					SC_Debug("stacked cannot-move unit="..SC_GetUnitDebugLabel(unit).." plot="..SC_GetPlotDebug(stack.Plot))
+					if SC_UnitNeedsOrder ~= nil and SC_UnitNeedsOrder(unit) and SC_TryForceClearUnitOrder ~= nil and SC_TryForceClearUnitOrder(unit, "stacked-cannot-move") then
+						moved = moved + 1
+						SC_Debug("stacked force-clear unit="..SC_GetUnitDebugLabel(unit).." reason=cannot-move plot="..SC_GetPlotDebug(stack.Plot))
+					end
 				end
 			end
 		end
@@ -5126,7 +5163,18 @@ local function SC_IsTurnUnblocked(player)
 	return true
 end
 
-local function SC_TryAutoEndTurn(player)
+local function SC_ShouldStayQuietAfterEndSent(player, reason)
+	if reason == "clear" or reason == "Game.IsProcessingMessages=true" then
+		return true
+	end
+	if reason == "UI.CanEndTurn=false" then
+		local blocking = SC_GetSafeNumber(function() return player:GetEndTurnBlockingType() end, -999)
+		return EndTurnBlockingTypes ~= nil and blocking == EndTurnBlockingTypes.NO_ENDTURN_BLOCKING_TYPE
+	end
+	return false
+end
+
+local function SC_TryAutoEndTurn(player, allowRepeatAfterHandledBlocker)
 	if player == nil or not SC_IsTakeoverActive() or not SC_GetConfig("AutoEndTurn", true) then
 		SC_Debug("autoEndTurn skip active="..SC_BoolText(SC_IsTakeoverActive()).." enabled="..SC_BoolText(SC_GetConfig("AutoEndTurn", true)))
 		return false
@@ -5138,12 +5186,20 @@ local function SC_TryAutoEndTurn(player)
 		return false
 	end
 	local turn = SC_GetSafeNumber(function() return Game.GetGameTurn() end, -1)
-	if SC_GetConfig("PostEndTurnQuietMode", true) and SC_LAST_AUTO_END_TURN == turn and SC_AUTO_END_SEND_COUNT_THIS_TURN > 0 then
-		if not SC_AUTO_END_POST_SEND_LOGGED_THIS_TURN then
-			SC_AUTO_END_POST_SEND_LOGGED_THIS_TURN = true
-			SC_Debug("autoEndTurn skip reason=post-send-quiet turn="..tostring(turn).." sends="..tostring(SC_AUTO_END_SEND_COUNT_THIS_TURN).." blocker="..SC_GetBlockingDebug(player))
+	if SC_GetConfig("PostEndTurnQuietMode", true) and SC_LAST_AUTO_END_TURN == turn and SC_AUTO_END_SEND_COUNT_THIS_TURN > 0 and allowRepeatAfterHandledBlocker ~= true then
+		local quietReason = SC_GetTurnBlockReason(player)
+		if SC_ShouldStayQuietAfterEndSent(player, quietReason) then
+			if not SC_AUTO_END_POST_SEND_LOGGED_THIS_TURN then
+				SC_AUTO_END_POST_SEND_LOGGED_THIS_TURN = true
+				SC_Debug("autoEndTurn skip reason=post-send-quiet turn="..tostring(turn).." sends="..tostring(SC_AUTO_END_SEND_COUNT_THIS_TURN).." waitReason="..tostring(quietReason).." blocker="..SC_GetBlockingDebug(player))
+			end
+			return false
 		end
-		return false
+		SC_AUTO_END_POST_SEND_LOGGED_THIS_TURN = false
+		SC_Debug("autoEndTurn resume-after-end-sent reason="..tostring(quietReason).." sends="..tostring(SC_AUTO_END_SEND_COUNT_THIS_TURN).." blocker="..SC_GetBlockingDebug(player))
+	elseif SC_LAST_AUTO_END_TURN == turn and SC_AUTO_END_SEND_COUNT_THIS_TURN > 0 and allowRepeatAfterHandledBlocker == true then
+		SC_AUTO_END_POST_SEND_LOGGED_THIS_TURN = false
+		SC_Debug("autoEndTurn repeat-after-handled-blocker sends="..tostring(SC_AUTO_END_SEND_COUNT_THIS_TURN).." blocker="..SC_GetBlockingDebug(player))
 	end
 	local maxSends = SC_GetConfig("MaxAutoEndTurnSendsPerTurn", 6)
 	if SC_LAST_AUTO_END_TURN == turn and SC_AUTO_END_SEND_COUNT_THIS_TURN >= maxSends then
@@ -5219,15 +5275,21 @@ local function SC_OnAutomationUpdate(deltaSeconds)
 			return
 		end
 		local turn = SC_GetSafeNumber(function() return Game.GetGameTurn() end, -1)
+		local postSendReason = nil
 		if SC_GetConfig("PostEndTurnQuietMode", true) and SC_LAST_AUTO_END_TURN == turn and SC_AUTO_END_SEND_COUNT_THIS_TURN > 0 then
-			if not SC_AUTO_END_POST_SEND_LOGGED_THIS_TURN then
-				SC_AUTO_END_POST_SEND_LOGGED_THIS_TURN = true
-				SC_Debug("autoRetry wait-after-end-sent reason=post-send-quiet sends="..tostring(SC_AUTO_END_SEND_COUNT_THIS_TURN).." blocker="..SC_GetBlockingDebug(player))
+			postSendReason = SC_GetTurnBlockReason(player)
+			if SC_ShouldStayQuietAfterEndSent(player, postSendReason) then
+				if not SC_AUTO_END_POST_SEND_LOGGED_THIS_TURN then
+					SC_AUTO_END_POST_SEND_LOGGED_THIS_TURN = true
+					SC_Debug("autoRetry wait-after-end-sent reason=post-send-quiet waitReason="..tostring(postSendReason).." sends="..tostring(SC_AUTO_END_SEND_COUNT_THIS_TURN).." blocker="..SC_GetBlockingDebug(player))
+				end
+				return
 			end
-			return
+			SC_AUTO_END_POST_SEND_LOGGED_THIS_TURN = false
+			SC_Debug("autoRetry resume-after-end-sent reason="..tostring(postSendReason).." sends="..tostring(SC_AUTO_END_SEND_COUNT_THIS_TURN).." blocker="..SC_GetBlockingDebug(player))
 		end
 		if SC_LAST_AUTO_END_TURN == turn then
-			local postSendReason = SC_GetTurnBlockReason(player)
+			postSendReason = postSendReason or SC_GetTurnBlockReason(player)
 			if postSendReason == "clear" or postSendReason == "Game.IsProcessingMessages=true" then
 				return
 			end
@@ -5253,12 +5315,13 @@ local function SC_OnAutomationUpdate(deltaSeconds)
 			SC_ProcessNotificationQueue(player, "autoRetry")
 		end
 		local reason = SC_GetTurnBlockReason(player)
+		local handled = 0
 		if reason ~= "clear" then
 			local atWar = SC_PlayerAtWar(player)
-			local handled = SC_HandleEndTurnBlocker(player, atWar, false)
+			handled = SC_HandleEndTurnBlocker(player, atWar, false)
 			SC_Debug("autoRetry blocker reason="..tostring(reason).." handled="..tostring(handled).." blocker="..SC_GetBlockingDebug(player))
 		end
-		SC_TryAutoEndTurn(player)
+		SC_TryAutoEndTurn(player, handled > 0)
 	end)
 	SC_AUTO_RETRY_RUNNING = false
 	if not ok then

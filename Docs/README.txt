@@ -3,7 +3,7 @@
 
 《Sid Meier's Civilization V》后期高层托管与微操减负 Mod。
 
-当前版本：v1.22
+当前版本：v1.23
 状态：Alpha
 支持：单人游戏
 不支持：多人、热座
