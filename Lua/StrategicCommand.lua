@@ -3,7 +3,7 @@
 
 include("StrategicCommand_Config.lua")
 
-local SC_VERSION = "1.23"
+local SC_VERSION = "1.24"
 local SC_LOAD_TURN = -1
 local SC_SAVE_DATA = nil
 local SC_TAKEOVER_SAVE_KEY = "SC_TAKEOVER_REMAINING"
@@ -19,6 +19,7 @@ local SC_AUTO_RETRY_ACCUMULATOR = 0
 local SC_AUTO_RETRY_RUNNING = false
 SC_STRATEGIC_ORDERED_THIS_TURN = {}
 SC_TACTICAL_ORDERED_THIS_TURN = {}
+SC_TACTICAL_NO_TARGET_THIS_TURN = {}
 SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
 SC_DIRECT_PUSH_FAILED_THIS_TURN = {}
@@ -1059,6 +1060,68 @@ function SC_GetTacticalActionCapForUnit(unit, unitInfo, role)
 	return defaultCap
 end
 
+function SC_GetUnitPlotIndexForTacticalCache(unit)
+	if unit == nil then
+		return nil
+	end
+	local plot = nil
+	pcall(function() plot = unit:GetPlot() end)
+	if plot == nil then
+		return nil
+	end
+	local ok, index = pcall(function() return plot:GetPlotIndex() end)
+	if ok then
+		return index
+	end
+	return nil
+end
+
+function SC_FormatTacticalNoTargetCache(info)
+	if info == nil then
+		return "cache=nil"
+	end
+	return "cachedPlot="..tostring(info.plotIndex or "nil")..
+		" role="..tostring(info.role or "nil")..
+		" enemyUnits="..tostring(info.enemyUnits or 0)..
+		" enemyCities="..tostring(info.enemyCities or 0)..
+		" outOfRange="..tostring(info.outOfRange or 0)..
+		" reason="..tostring(info.reason or "nil")
+end
+
+function SC_GetValidTacticalNoTargetCache(unit, unitKey)
+	if unitKey == nil then
+		return nil
+	end
+	local info = SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey]
+	if info == nil then
+		return nil
+	end
+	local currentPlotIndex = SC_GetUnitPlotIndexForTacticalCache(unit)
+	if currentPlotIndex ~= nil and info.plotIndex ~= nil and currentPlotIndex ~= info.plotIndex then
+		SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = nil
+		return nil
+	end
+	return info
+end
+
+function SC_RecordTacticalNoTarget(unit, unitKey, role, stats, reason)
+	if unitKey == nil or stats == nil then
+		return
+	end
+	if (stats.inRangeUnits or 0) > 0 or (stats.inRangeCities or 0) > 0 then
+		SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = nil
+		return
+	end
+	SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = {
+		plotIndex = SC_GetUnitPlotIndexForTacticalCache(unit),
+		role = role,
+		enemyUnits = stats.enemyUnits or 0,
+		enemyCities = stats.enemyCities or 0,
+		outOfRange = stats.outOfRange or 0,
+		reason = reason or "no-in-range-target"
+	}
+end
+
 local function SC_GetBestTrainableUnit(city, preferSea, preferAir, reservedOrders)
 	local bestUnitID = nil
 	local bestScore = -1
@@ -1256,46 +1319,52 @@ local function SC_RangeStrike(unit, plot)
 			or after.x ~= before.x
 			or after.y ~= before.y
 	end
-	local function finishIfStrikeResolved(before, method)
+	local function finishIfStrikeResolved(before, method, allowOrderClear)
 		local after = getStrikeSnapshot()
 		local changed = strikeStateChanged(before, after)
 		local needsOrder = SC_UnitNeedsOrder(unit)
-		if changed or not needsOrder then
+		if changed or (allowOrderClear and not needsOrder) then
+			local status = "queued"
+			if changed then
+				status = "fired"
+			end
 			SC_Debug("rangeStrike resolved unit="..SC_GetUnitDebugLabel(unit)..
 				" method="..tostring(method)..
+				" status="..tostring(status)..
 				" changed="..SC_BoolText(changed)..
 				" needsOrder="..SC_BoolText(needsOrder)..
 				" moves="..tostring(before and before.moves or "?").."->"..tostring(after.moves)..
 				" damage="..tostring(before and before.damage or "?").."->"..tostring(after.damage)..
 				" activity="..tostring(before and before.activity or "?").."->"..tostring(after.activity)..
 				" state="..SC_GetUnitOrderDebug(unit))
-			return true
+			return true, status
 		end
-		return false
+		return false, "unresolved"
 	end
 	if SC_RANGE_FAILED_THIS_TURN[cacheKey] then
 		SC_Debug("rangeStrike cached-skip unit="..SC_GetUnitDebugLabel(unit)..
 			" role="..tostring(role)..
 			" target="..SC_GetPlotDebug(plot)..
 			" state="..SC_GetUnitOrderDebug(unit))
-		return false
+		return false, "cached"
 	end
 	SC_Debug("rangeStrike try unit="..SC_GetUnitDebugLabel(unit)..
 		" role="..tostring(role)..
 		" target="..SC_GetPlotDebug(plot)..
 		" airAttack="..SC_BoolText(isAirAttack))
 	local targetCommandAccepted = false
-	local function tryTargetMission(missionType, reason)
+	local function tryTargetMission(missionType, reason, allowOrderClear)
 		if missionType == nil then
-			return false
+			return false, "missing-mission"
 		end
 		local before = getStrikeSnapshot()
 		if SC_SendUnitMission(unit, missionType, plot:GetX(), plot:GetY()) then
-			if finishIfStrikeResolved(before, reason) then
-				return true
+			local resolved, status = finishIfStrikeResolved(before, reason, allowOrderClear)
+			if resolved then
+				return true, status
 			end
 			if SC_TryDirectTargetedMission ~= nil and SC_TryDirectTargetedMission(unit, missionType, plot, reason) then
-				return true
+				return true, "direct"
 			end
 			SC_Debug("rangeStrike unresolved unit="..SC_GetUnitDebugLabel(unit)..
 				" mission="..SC_GetEnumDebugName(MissionTypes, missionType)..
@@ -1303,16 +1372,24 @@ local function SC_RangeStrike(unit, plot)
 				" state="..SC_GetUnitOrderDebug(unit))
 			targetCommandAccepted = true
 		end
-		return false
+		return false, "unresolved"
 	end
-	if isAirAttack and tryTargetMission(moveMission, "air-move") then
-		return true
+	do
+		local done, status = tryTargetMission(rangeMission, "range-attack", true)
+		if done then
+			return true, status
+		end
 	end
-	if tryTargetMission(rangeMission, "range-attack") then
-		return true
-	end
-	if not isAirAttack and (role == "fighter" or role == "bomber" or role == "carrier_air") and tryTargetMission(moveMission, "air-fallback-move") then
-		return true
+	if isAirAttack then
+		local done, status = tryTargetMission(moveMission, "air-move", true)
+		if done then
+			return true, status
+		end
+	elseif role == "fighter" or role == "bomber" or role == "carrier_air" then
+		local done, status = tryTargetMission(moveMission, "air-fallback-move", true)
+		if done then
+			return true, status
+		end
 	end
 	local nativeBefore = getStrikeSnapshot()
 	local ok, err = pcall(function()
@@ -1322,8 +1399,11 @@ local function SC_RangeStrike(unit, plot)
 		" target="..SC_GetPlotDebug(plot)..
 		" ok="..SC_BoolText(ok)..
 		" err="..tostring(err))
-	if ok and finishIfStrikeResolved(nativeBefore, "native") then
-		return true
+	if ok then
+		local resolved, status = finishIfStrikeResolved(nativeBefore, "native", true)
+		if resolved then
+			return true, status
+		end
 	end
 	if ok then
 		SC_Debug("rangeStrike native-unresolved unit="..SC_GetUnitDebugLabel(unit).." target="..SC_GetPlotDebug(plot).." state="..SC_GetUnitOrderDebug(unit))
@@ -1334,7 +1414,7 @@ local function SC_RangeStrike(unit, plot)
 		" accepted="..SC_BoolText(targetCommandAccepted)..
 		" nativeOk="..SC_BoolText(ok)..
 		" state="..SC_GetUnitOrderDebug(unit))
-	return false
+	return false, "unresolved"
 end
 
 local function SC_ScoreRangeTarget(player, unit, role, unitPlot, targetPlot, enemyUnit, enemyCity)
@@ -1498,22 +1578,38 @@ local function SC_AutomateLocalDefense(player, atWar)
 					if unitKey ~= nil and actionCount >= actionCap then
 						debugUnit("localDefense unit-cap unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." count="..tostring(actionCount).." cap="..tostring(actionCap))
 					elseif canAct and SC_IsRangedAttackUnit(unit, unitInfo, role) then
-						local targetPlot, targetScore, targetStats = SC_FindRangeTarget(player, unit)
-						if targetPlot ~= nil and SC_RangeStrike(unit, targetPlot) then
-							local newCount = SC_RecordTacticalAction(unitKey)
-							debugUnit("localDefense fired round="..tostring(round).." unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
-							if unitKey ~= nil then
-								SC_TACTICAL_ORDERED_THIS_TURN[unitKey] = newCount
-							end
-							actions = actions + 1
-							roundActions = roundActions + 1
-						elseif targetPlot == nil then
-							debugUnit("localDefense no-target unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." "..SC_GetRangeTargetStatsDebug(targetStats))
+						local cachedNoTarget = SC_GetValidTacticalNoTargetCache(unit, unitKey)
+						if cachedNoTarget ~= nil then
+							debugUnit("localDefense no-target-cached unit="..SC_GetUnitDebugLabel(unit).." "..SC_FormatTacticalNoTargetCache(cachedNoTarget))
 						else
-							local newCount = SC_RecordTacticalAction(unitKey)
-							debugUnit("localDefense fire-failed unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
-							if unitKey ~= nil then
-								SC_TACTICAL_ORDERED_THIS_TURN[unitKey] = newCount
+							local targetPlot, targetScore, targetStats = SC_FindRangeTarget(player, unit)
+							local strikeDone = false
+							local strikeStatus = "none"
+							if targetPlot ~= nil then
+								strikeDone, strikeStatus = SC_RangeStrike(unit, targetPlot)
+							end
+							if targetPlot ~= nil and strikeDone then
+								local newCount = SC_RecordTacticalAction(unitKey)
+								local label = "queued"
+								if strikeStatus == "fired" or strikeStatus == "direct" then
+									label = "fired"
+								end
+								debugUnit("localDefense "..label.." round="..tostring(round).." unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." status="..tostring(strikeStatus).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
+								if unitKey ~= nil then
+									SC_TACTICAL_ORDERED_THIS_TURN[unitKey] = newCount
+									SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = nil
+								end
+								actions = actions + 1
+								roundActions = roundActions + 1
+							elseif targetPlot == nil then
+								SC_RecordTacticalNoTarget(unit, unitKey, role, targetStats, "out-of-range")
+								debugUnit("localDefense no-target unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." "..SC_GetRangeTargetStatsDebug(targetStats))
+							else
+								local newCount = SC_RecordTacticalAction(unitKey)
+								debugUnit("localDefense fire-failed unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." status="..tostring(strikeStatus).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
+								if unitKey ~= nil then
+									SC_TACTICAL_ORDERED_THIS_TURN[unitKey] = newCount
+								end
 							end
 						end
 					elseif not canAct then
@@ -3139,6 +3235,13 @@ local function SC_ScoreStrategicTarget(player, unit, role, unitPlot, targetPlot,
 		if role == "fast_assault" or role == "assault" or role == "naval_melee" then
 			score = score + 180
 		end
+		if role == "carrier" then
+			score = score + 120
+		elseif role == "missile_carrier" or role == "naval_ranged" then
+			score = score + 180
+		elseif role == "siege" or role == "land_ranged" then
+			score = score + 160
+		end
 		if SC_GetSafeNumber(function() return enemyCity:IsCapital() and 1 or 0 end, 0) > 0 then
 			score = score + 120
 		end
@@ -3155,6 +3258,11 @@ local function SC_ScoreStrategicTarget(player, unit, role, unitPlot, targetPlot,
 		end
 		if enemyRole == "carrier" or enemyRole == "missile_carrier" or enemyRole == "siege" or enemyRole == "land_ranged" then
 			score = score + 120
+		end
+		if role == "carrier" and (enemyRole == "carrier" or enemyRole == "missile_carrier" or enemyRole == "naval_ranged") then
+			score = score + 180
+		elseif (role == "missile_carrier" or role == "naval_ranged") and enemyInfo ~= nil and (enemyInfo.Domain == "DOMAIN_SEA" or enemyRole == "siege" or enemyRole == "land_ranged") then
+			score = score + 160
 		end
 	end
 	return score
@@ -3621,6 +3729,127 @@ function SC_FindStandoffMovePlot(player, unit, role, targetPlot)
 	return bestPlot
 end
 
+function SC_IsWaterOrCoastalStrategicPlot(plot)
+	if plot == nil then
+		return false
+	end
+	if SC_GetSafeNumber(function() return plot:IsWater() and 1 or 0 end, 0) > 0 then
+		return true
+	end
+	local x = plot:GetX()
+	local y = plot:GetY()
+	for dx = -1, 1, 1 do
+		for dy = -1, 1, 1 do
+			if dx ~= 0 or dy ~= 0 then
+				local nearPlot = SC_GetNearbyPlot(x, y, dx, dy, 1)
+				if nearPlot ~= nil and SC_GetSafeNumber(function() return nearPlot:IsWater() and 1 or 0 end, 0) > 0 then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+function SC_GetStrategicPlanStatsDebug(stats)
+	if stats == nil then
+		return "stats=nil"
+	end
+	return "candidates="..tostring(stats.candidates or 0)..
+		" noPlot="..tostring(stats.noPlot or 0)..
+		" noMovePlot="..tostring(stats.noMovePlot or 0)..
+		" stationary="..tostring(stats.stationary or 0)..
+		" bestScore="..tostring(stats.bestScore or "nil")..
+		" bestKind="..tostring(stats.bestKind or "nil")
+end
+
+function SC_FindStrategicMovePlan(player, unit)
+	if player == nil or unit == nil then
+		return nil, nil
+	end
+	local team = Teams[player:GetTeam()]
+	local unitPlot = unit:GetPlot()
+	if team == nil or unitPlot == nil then
+		return nil, nil
+	end
+	local unitInfo = SC_GetUnitInfo(unit)
+	local role = SC_GetUnitRole(unit, unitInfo)
+	local bestPlan = nil
+	local bestScore = -999999
+	local stats = {
+		candidates = 0,
+		noPlot = 0,
+		noMovePlot = 0,
+		stationary = 0,
+		bestScore = nil,
+		bestKind = nil
+	}
+	local function considerTarget(targetPlot, enemyUnit, enemyCity, kind)
+		stats.candidates = stats.candidates + 1
+		if targetPlot == nil then
+			stats.noPlot = stats.noPlot + 1
+			return
+		end
+		local targetScore = SC_ScoreStrategicTarget(player, unit, role, unitPlot, targetPlot, enemyUnit, enemyCity)
+		if (role == "carrier" or role == "missile_carrier" or role == "naval_ranged" or role == "submarine" or role == "naval_melee") and SC_IsWaterOrCoastalStrategicPlot(targetPlot) then
+			targetScore = targetScore + 160
+		end
+		local movePlot = targetPlot
+		local mode = "direct"
+		if SC_GetConfig("EnableRangedReposition", true) and SC_IsStrategicRangedMoveRole(role) then
+			movePlot = SC_FindStandoffMovePlot(player, unit, role, targetPlot)
+			mode = "standoff"
+		end
+		if movePlot == nil then
+			stats.noMovePlot = stats.noMovePlot + 1
+			return
+		end
+		local moveDistance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), movePlot:GetX(), movePlot:GetY())
+		if moveDistance <= 0 then
+			stats.stationary = stats.stationary + 1
+			return
+		end
+		local targetDistance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), targetPlot:GetX(), targetPlot:GetY())
+		local planScore = targetScore - moveDistance * 7
+		if role == "carrier" then
+			planScore = planScore + 120
+			if kind == "city" and SC_IsWaterOrCoastalStrategicPlot(targetPlot) then
+				planScore = planScore + 120
+			end
+		elseif role == "missile_carrier" or role == "naval_ranged" then
+			planScore = planScore + 90
+		elseif role == "fast_assault" or role == "naval_melee" then
+			planScore = planScore + math.max(0, 160 - targetDistance * 8)
+		end
+		if planScore > bestScore then
+			bestScore = planScore
+			bestPlan = {
+				targetPlot = targetPlot,
+				movePlot = movePlot,
+				mode = mode,
+				kind = kind,
+				targetScore = targetScore,
+				planScore = planScore,
+				moveDistance = moveDistance,
+				targetDistance = targetDistance
+			}
+			stats.bestScore = planScore
+			stats.bestKind = kind
+		end
+	end
+	for otherID, otherPlayer in pairs(Players) do
+		if otherPlayer ~= nil and otherPlayer:IsAlive() and otherPlayer:GetID() ~= player:GetID() and team:IsAtWar(otherPlayer:GetTeam()) then
+			for city in otherPlayer:Cities() do
+				considerTarget(city:Plot(), nil, city, "city")
+			end
+			for enemyUnit in otherPlayer:Units() do
+				considerTarget(enemyUnit:GetPlot(), enemyUnit, nil, "unit")
+			end
+		end
+	end
+	return bestPlan, stats
+end
+
 local function SC_CanStrategicMoveRole(role)
 	local war = SC_GetConfig("WarProfile", "ADVANCE")
 	if role == "fighter" or role == "bomber" or role == "carrier_air" or role == "missile" or role == "nuke" then
@@ -3671,29 +3900,31 @@ local function SC_AutomateStrategicMovement(player, atWar)
 			elseif unitKey ~= nil and SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] then
 				debugMove("strategicMove turn-skip unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role))
 			elseif SC_CanStrategicMoveRole(role) then
-				local targetPlot = SC_FindStrategicTarget(player, unit)
+				local plan, planStats = SC_FindStrategicMovePlan(player, unit)
 				local unitPlot = unit:GetPlot()
-				if targetPlot ~= nil and unitPlot ~= nil then
-					local movePlot = targetPlot
-					local mode = "direct"
-					if SC_GetConfig("EnableRangedReposition", true) and SC_IsStrategicRangedMoveRole(role) then
-						movePlot = SC_FindStandoffMovePlot(player, unit, role, targetPlot)
-						mode = "standoff"
-					end
+				if plan ~= nil and unitPlot ~= nil then
+					local targetPlot = plan.targetPlot
+					local movePlot = plan.movePlot
+					local mode = plan.mode or "direct"
 					if movePlot ~= nil then
 						local distance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), movePlot:GetX(), movePlot:GetY())
 						if distance > 0 then
 							debugMove("strategicMove order unit="..SC_GetUnitDebugLabel(unit)..
 								" role="..tostring(role)..
 								" mode="..mode..
+								" kind="..tostring(plan.kind)..
 								" from="..SC_GetPlotDebug(unitPlot)..
 								" target="..SC_GetPlotDebug(targetPlot)..
 								" moveTo="..SC_GetPlotDebug(movePlot)..
-								" distance="..tostring(distance))
+								" distance="..tostring(distance)..
+								" targetDistance="..tostring(plan.targetDistance)..
+								" score="..tostring(plan.planScore)..
+								" "..SC_GetStrategicPlanStatsDebug(planStats))
 							local ok = SC_TryMoveMission(unit, movePlot, "strategic")
 							if ok then
 								if unitKey ~= nil then
 									SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = true
+									SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = nil
 								end
 								moved = moved + 1
 							else
@@ -3703,20 +3934,19 @@ local function SC_AutomateStrategicMovement(player, atWar)
 								end
 							end
 						else
-							debugMove("strategicMove already-positioned unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." plot="..SC_GetPlotDebug(unitPlot))
+							debugMove("strategicMove already-positioned unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." plot="..SC_GetPlotDebug(unitPlot).." "..SC_GetStrategicPlanStatsDebug(planStats))
 							if unitKey ~= nil then
 								SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = true
 							end
 						end
 					else
-						local targetDistance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), targetPlot:GetX(), targetPlot:GetY())
-						debugMove("strategicMove no-move-plot unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." target="..SC_GetPlotDebug(targetPlot).." currentDistance="..tostring(targetDistance).." range="..tostring(SC_GetUnitRangeValue(unit, unitInfo)))
+						debugMove("strategicMove no-move-plot unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." target="..SC_GetPlotDebug(targetPlot).." range="..tostring(SC_GetUnitRangeValue(unit, unitInfo)).." "..SC_GetStrategicPlanStatsDebug(planStats))
 						if unitKey ~= nil then
 							SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = true
 						end
 					end
 				else
-					debugMove("strategicMove no-target unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role))
+					debugMove("strategicMove no-plan unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." "..SC_GetStrategicPlanStatsDebug(planStats))
 					if unitKey ~= nil then
 						SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = true
 					end
@@ -4317,17 +4547,31 @@ local function SC_AutomateFinalUnitOrders(player, atWar)
 			if unitKey ~= nil and actionCount >= actionCap then
 				debugFinal("finalOrders tactical-cap unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." count="..tostring(actionCount).." cap="..tostring(actionCap))
 			else
+				local cachedNoTarget = SC_GetValidTacticalNoTargetCache(unit, unitKey)
+				if cachedNoTarget ~= nil then
+					debugFinal("finalOrders tactical-no-target-cached unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." "..SC_FormatTacticalNoTargetCache(cachedNoTarget))
+				else
 				local targetPlot, targetScore, targetStats = SC_FindRangeTarget(player, unit)
 				if targetPlot ~= nil then
-					done = SC_RangeStrike(unit, targetPlot)
+					local strikeStatus = "none"
+					done, strikeStatus = SC_RangeStrike(unit, targetPlot)
 					if done then
 						local newCount = SC_RecordTacticalAction(unitKey)
-						debugFinal("finalOrders tactical-fired unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
+						local label = "queued"
+						if strikeStatus == "fired" or strikeStatus == "direct" then
+							label = "fired"
+						end
+						debugFinal("finalOrders tactical-"..label.." unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." status="..tostring(strikeStatus).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
+						if unitKey ~= nil then
+							SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = nil
+						end
 					else
-						debugFinal("finalOrders tactical-failed unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
+						debugFinal("finalOrders tactical-failed unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." status="..tostring(strikeStatus).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
 					end
 				else
+					SC_RecordTacticalNoTarget(unit, unitKey, role, targetStats, "out-of-range")
 					debugFinal("finalOrders tactical-no-target unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." "..SC_GetRangeTargetStatsDebug(targetStats))
+				end
 				end
 			end
 		end
@@ -5111,6 +5355,7 @@ local function SC_ResetTakeoverPassCounterForTurn()
 		SC_LAST_TAKEOVER_PASS_COUNT = 0
 		SC_STRATEGIC_ORDERED_THIS_TURN = {}
 		SC_TACTICAL_ORDERED_THIS_TURN = {}
+		SC_TACTICAL_NO_TARGET_THIS_TURN = {}
 		SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 		SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
 		SC_DIRECT_PUSH_FAILED_THIS_TURN = {}
