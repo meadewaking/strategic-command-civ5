@@ -3,7 +3,7 @@
 
 include("StrategicCommand_Config.lua")
 
-local SC_VERSION = "1.29"
+local SC_VERSION = "1.30"
 local SC_LOAD_TURN = -1
 local SC_SAVE_DATA = nil
 local SC_TAKEOVER_SAVE_KEY = "SC_TAKEOVER_REMAINING"
@@ -25,6 +25,7 @@ SC_ASSAULT_SUPPORT_CACHE_THIS_TURN = {}
 SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN = {}
 SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
+SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN = {}
 SC_DIRECT_PUSH_FAILED_THIS_TURN = {}
 SC_HEAL_FAILED_THIS_TURN = {}
 SC_RANGE_FAILED_THIS_TURN = {}
@@ -4685,6 +4686,125 @@ function SC_FindCityCaptureMovePlot(player, unit, role, targetPlot, reserved, st
 	return nil, "capture-no-plot"
 end
 
+function SC_TryCaptureReadyCity(player, unit, role, city, cityPlot, source)
+	if player == nil or unit == nil or city == nil or cityPlot == nil then
+		return false, "missing"
+	end
+	if not SC_IsCityReadyForCapture(city) then
+		return false, "not-ready"
+	end
+	local unitInfo = SC_GetUnitInfo(unit)
+	if not SC_CanActAsCityCaptureUnit(unit, unitInfo, role) then
+		return false, "not-capture-unit"
+	end
+	local unitPlot = unit:GetPlot()
+	if unitPlot == nil then
+		return false, "no-unit-plot"
+	end
+	local distance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), cityPlot:GetX(), cityPlot:GetY())
+	if distance > SC_GetConfig("CityCaptureDirectMaxDistance", 1) then
+		return false, "too-far"
+	end
+	local damage, maxHP, ratio = SC_GetCityDamageInfo(city)
+	local beforeOwner = SC_GetSafeNumber(function() return city:GetOwner() end, -1)
+	local ok = SC_TryMoveMission(unit, cityPlot, tostring(source or "captureFinish"), true)
+	local afterOwner = SC_GetSafeNumber(function()
+		local afterCity = cityPlot:GetPlotCity()
+		if afterCity ~= nil then
+			return afterCity:GetOwner()
+		end
+		return cityPlot:GetOwner()
+	end, -1)
+	local captured = afterOwner == player:GetID()
+	SC_Debug("captureFinish try unit="..SC_GetUnitDebugLabel(unit)..
+		" role="..tostring(role)..
+		" source="..tostring(source or "captureFinish")..
+		" cityPlot="..SC_GetPlotDebug(cityPlot)..
+		" distance="..tostring(distance)..
+		" damage="..tostring(damage).."/"..tostring(maxHP)..
+		" ratio="..tostring(ratio)..
+		" beforeOwner=P"..tostring(beforeOwner)..
+		" afterOwner=P"..tostring(afterOwner)..
+		" missionOk="..SC_BoolText(ok)..
+		" captured="..SC_BoolText(captured)..
+		" state="..SC_GetUnitOrderDebug(unit))
+	return ok, captured and "captured" or "attempted"
+end
+
+function SC_AutomateCityCaptureFinishers(player, atWar)
+	if player == nil or not atWar or not SC_GetConfig("AutoCityCaptureFinishers", true) then
+		return 0
+	end
+	local team = Teams[player:GetTeam()]
+	if team == nil then
+		return 0
+	end
+	local actions = 0
+	local maxActions = SC_GetConfig("MaxCityCaptureFinishersPerTurn", 20)
+	local debugLimit = SC_GetConfig("DebugUnitDecisionLimit", 60)
+	local debugCount = 0
+	local function debugCapture(text)
+		if SC_GetConfig("DebugUnitDecisions", true) and debugCount < debugLimit then
+			debugCount = debugCount + 1
+			SC_Debug(text)
+		end
+	end
+	for unit in player:Units() do
+		if actions >= maxActions then
+			return actions
+		end
+		if unit ~= nil and not unit:IsDead() and unit:CanMove() and unit:GetDamage() < SC_GetConfig("HealDamageThreshold", 45) then
+			local unitInfo = SC_GetUnitInfo(unit)
+			local role = SC_GetUnitRole(unit, unitInfo)
+			if SC_CanActAsCityCaptureUnit(unit, unitInfo, role) then
+				local unitPlot = unit:GetPlot()
+				if unitPlot ~= nil then
+					local bestCity = nil
+					local bestPlot = nil
+					local bestScore = -999999
+					for otherID, otherPlayer in pairs(Players) do
+						if otherPlayer ~= nil and otherPlayer:IsAlive() and otherPlayer:GetID() ~= player:GetID() and team:IsAtWar(otherPlayer:GetTeam()) then
+							for city in otherPlayer:Cities() do
+								local cityPlot = city:Plot()
+								if cityPlot ~= nil and SC_IsCityReadyForCapture(city) then
+									local distance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), cityPlot:GetX(), cityPlot:GetY())
+									if distance <= SC_GetConfig("CityCaptureDirectMaxDistance", 1) then
+										local damage = SC_GetSafeNumber(function() return city:GetDamage() end, 0)
+										local score = 3000 + damage * 3 - distance * 40
+										if role == "fast_assault" or role == "naval_melee" or role == "missile_carrier" or role == "naval_ranged" then
+											score = score + 250
+										end
+										if score > bestScore then
+											bestScore = score
+											bestCity = city
+											bestPlot = cityPlot
+										end
+									end
+								end
+							end
+						end
+					end
+					if bestCity ~= nil and bestPlot ~= nil then
+						local ok, status = SC_TryCaptureReadyCity(player, unit, role, bestCity, bestPlot, "captureFinisher")
+						if ok then
+							local unitKey = SC_GetUnitTurnKey(unit)
+							if unitKey ~= nil then
+								SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = true
+								SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = nil
+								SC_TACTICAL_QUEUED_THIS_TURN[unitKey] = nil
+							end
+							actions = actions + 1
+						else
+							debugCapture("captureFinish failed unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." target="..SC_GetPlotDebug(bestPlot).." status="..tostring(status).." score="..tostring(bestScore))
+						end
+					end
+				end
+			end
+		end
+	end
+	return actions
+end
+
 function SC_IsWaterOrCoastalStrategicPlot(plot)
 	if plot == nil then
 		return false
@@ -5474,6 +5594,249 @@ local function SC_AutomateTradeRoutes(player)
 	return handled
 end
 
+function SC_IsUnitEmbarked(unit)
+	if unit == nil then
+		return false
+	end
+	local ok, embarked = pcall(function() return unit:IsEmbarked() end)
+	return ok and embarked
+end
+
+function SC_IsFragileTransportUnit(unit, unitInfo)
+	unitInfo = unitInfo or SC_GetUnitInfo(unit)
+	if unit == nil or unitInfo == nil then
+		return false
+	end
+	if SC_IsUnitEmbarked(unit) then
+		return true
+	end
+	return unitInfo.Domain == "DOMAIN_SEA" and SC_IsTradeLike(unitInfo)
+end
+
+function SC_IsNavalEscortUnit(unit, unitInfo, role)
+	unitInfo = unitInfo or SC_GetUnitInfo(unit)
+	if unit == nil or unitInfo == nil or unitInfo.Domain ~= "DOMAIN_SEA" then
+		return false
+	end
+	if SC_IsTradeLike(unitInfo) or SC_IsFragileTransportUnit(unit, unitInfo) then
+		return false
+	end
+	role = role or SC_GetUnitRole(unit, unitInfo)
+	return role == "naval_melee"
+		or role == "naval_ranged"
+		or role == "missile_carrier"
+		or role == "submarine"
+		or role == "carrier"
+end
+
+function SC_CountFriendlyNavalEscortsNearPlot(player, targetPlot, radius)
+	if player == nil or targetPlot == nil then
+		return 0
+	end
+	radius = radius or SC_GetConfig("TransportEscortRadius", 2)
+	local playerID = player:GetID()
+	local count = 0
+	for dx = -radius, radius, 1 do
+		for dy = -radius, radius, 1 do
+			local plot = SC_GetNearbyPlot(targetPlot:GetX(), targetPlot:GetY(), dx, dy, radius)
+			if plot ~= nil and Map.PlotDistance(targetPlot:GetX(), targetPlot:GetY(), plot:GetX(), plot:GetY()) <= radius then
+				local unitCount = SC_GetSafeNumber(function() return plot:GetNumUnits() end, 0)
+				for i = 0, unitCount - 1, 1 do
+					local otherUnit = nil
+					pcall(function() otherUnit = plot:GetUnit(i) end)
+					if otherUnit ~= nil and SC_GetSafeNumber(function() return otherUnit:GetOwner() end, -1) == playerID then
+						local otherInfo = SC_GetUnitInfo(otherUnit)
+						if SC_IsNavalEscortUnit(otherUnit, otherInfo, SC_GetUnitRole(otherUnit, otherInfo)) then
+							count = count + 1
+						end
+					end
+				end
+			end
+		end
+	end
+	return count
+end
+
+function SC_CountEnemySeaThreatsNearPlot(player, targetPlot, radius)
+	if player == nil or targetPlot == nil then
+		return 0
+	end
+	local team = Teams[player:GetTeam()]
+	if team == nil then
+		return 0
+	end
+	radius = radius or SC_GetConfig("TransportThreatRadius", 6)
+	local count = 0
+	for otherID, otherPlayer in pairs(Players) do
+		if otherPlayer ~= nil and otherPlayer:IsAlive() and otherPlayer:GetID() ~= player:GetID() and team:IsAtWar(otherPlayer:GetTeam()) then
+			for enemyUnit in otherPlayer:Units() do
+				local enemyPlot = enemyUnit ~= nil and enemyUnit:GetPlot() or nil
+				if enemyPlot ~= nil then
+					local distance = Map.PlotDistance(targetPlot:GetX(), targetPlot:GetY(), enemyPlot:GetX(), enemyPlot:GetY())
+					if distance <= radius then
+						local enemyInfo = SC_GetUnitInfo(enemyUnit)
+						local enemyRole = SC_GetUnitRole(enemyUnit, enemyInfo)
+						if (enemyInfo ~= nil and enemyInfo.Domain == "DOMAIN_SEA") or SC_IsUnitEmbarked(enemyUnit) or enemyRole == "carrier_air" or enemyRole == "bomber" then
+							count = count + 1
+						end
+					end
+				end
+			end
+		end
+	end
+	return count
+end
+
+function SC_FindTransportEscortMovePlot(player, escort, transportPlot, reserved, stats)
+	if player == nil or escort == nil or transportPlot == nil then
+		return nil
+	end
+	local escortPlot = escort:GetPlot()
+	local escortInfo = SC_GetUnitInfo(escort)
+	if escortPlot == nil or escortInfo == nil then
+		return nil
+	end
+	local layer = SC_GetUnitStackLayer(escort)
+	local searchRadius = SC_GetConfig("TransportEscortSearchRadius", 2)
+	local bestPlot = nil
+	local bestScore = -999999
+	for radius = 1, searchRadius, 1 do
+		for dx = -radius, radius, 1 do
+			for dy = -radius, radius, 1 do
+				local plot = SC_GetNearbyPlot(transportPlot:GetX(), transportPlot:GetY(), dx, dy, radius)
+				if plot ~= nil then
+					local escortDistance = Map.PlotDistance(plot:GetX(), plot:GetY(), transportPlot:GetX(), transportPlot:GetY())
+					if escortDistance <= searchRadius then
+						local usable, moveDistance = SC_MoveCandidateIsUsable(player, escort, escortInfo, escortPlot, plot, layer, reserved, nil, stats)
+						if usable and moveDistance ~= nil and moveDistance > 0 then
+							local score = 1400 - moveDistance * 9 - escortDistance * 120
+							if escortDistance == 1 then
+								score = score + 220
+							end
+							local owner = SC_GetSafeNumber(function() return plot:GetOwner() end, -1)
+							if owner == player:GetID() then
+								score = score + 80
+							end
+							if score > bestScore then
+								bestScore = score
+								bestPlot = plot
+							end
+						end
+					end
+				end
+			end
+		end
+		if bestPlot ~= nil then
+			return bestPlot
+		end
+	end
+	return nil
+end
+
+function SC_TryHoldTransport(unit, reason)
+	if unit == nil then
+		return false
+	end
+	return SC_TryUnitActionByType(unit, {MISSION_ALERT = true, MISSION_SKIP = true})
+		or SC_TryUnitMission(unit, MissionTypes.MISSION_ALERT)
+		or SC_TryUnitMission(unit, GameInfoTypes.MISSION_ALERT)
+		or SC_TryUnitMission(unit, MissionTypes.MISSION_SKIP)
+		or SC_TryUnitMission(unit, GameInfoTypes.MISSION_SKIP)
+end
+
+function SC_AutomateTransportEscort(player, atWar)
+	if player == nil or not atWar or not SC_GetConfig("AutoTransportEscort", true) then
+		return 0
+	end
+	local handled = 0
+	local maxMoves = SC_GetConfig("MaxTransportEscortMovesPerTurn", 30)
+	local escortRadius = SC_GetConfig("TransportEscortRadius", 2)
+	local threatRadius = SC_GetConfig("TransportThreatRadius", 6)
+	local reserved = {}
+	local debugCount = 0
+	local debugLimit = SC_GetConfig("DebugUnitDecisionLimit", 60)
+	local function debugEscort(text)
+		if SC_GetConfig("DebugUnitDecisions", true) and debugCount < debugLimit then
+			debugCount = debugCount + 1
+			SC_Debug(text)
+		end
+	end
+	for transport in player:Units() do
+		if handled >= maxMoves then
+			return handled
+		end
+		if transport ~= nil and not transport:IsDead() then
+			local transportInfo = SC_GetUnitInfo(transport)
+			if SC_IsFragileTransportUnit(transport, transportInfo) then
+				local transportPlot = transport:GetPlot()
+				if transportPlot ~= nil and (SC_GetSafeNumber(function() return transportPlot:IsWater() and 1 or 0 end, 0) > 0 or SC_IsUnitEmbarked(transport)) then
+					local escorts = SC_CountFriendlyNavalEscortsNearPlot(player, transportPlot, escortRadius)
+					local threats = SC_CountEnemySeaThreatsNearPlot(player, transportPlot, threatRadius)
+					if escorts <= 0 then
+						local bestEscort = nil
+						local bestMovePlot = nil
+						local bestScore = -999999
+						local searchStats = {}
+						for escort in player:Units() do
+							if escort ~= nil and not escort:IsDead() and escort:CanMove() then
+								local escortInfo = SC_GetUnitInfo(escort)
+								local escortRole = SC_GetUnitRole(escort, escortInfo)
+								local escortKey = SC_GetUnitTurnKey(escort)
+								if SC_IsNavalEscortUnit(escort, escortInfo, escortRole) and (escortKey == nil or not SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN[escortKey]) then
+									local escortPlot = escort:GetPlot()
+									if escortPlot ~= nil then
+										local distance = Map.PlotDistance(escortPlot:GetX(), escortPlot:GetY(), transportPlot:GetX(), transportPlot:GetY())
+										local movePlot = SC_FindTransportEscortMovePlot(player, escort, transportPlot, reserved, searchStats)
+										if movePlot ~= nil then
+											local score = 2200 - distance * 10 + threats * 180
+											if escortRole == "naval_melee" or escortRole == "naval_ranged" or escortRole == "missile_carrier" then
+												score = score + 150
+											end
+											if score > bestScore then
+												bestScore = score
+												bestEscort = escort
+												bestMovePlot = movePlot
+											end
+										end
+									end
+								end
+							end
+						end
+						if bestEscort ~= nil and bestMovePlot ~= nil and SC_TryMoveMission(bestEscort, bestMovePlot, "transportEscort", true) then
+							local escortKey = SC_GetUnitTurnKey(bestEscort)
+							if escortKey ~= nil then
+								SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN[escortKey] = true
+								SC_STRATEGIC_ORDERED_THIS_TURN[escortKey] = true
+							end
+							SC_ReserveMovePlot(reserved, bestMovePlot, SC_GetUnitStackLayer(bestEscort))
+							handled = handled + 1
+							debugEscort("transportEscort order escort="..SC_GetUnitDebugLabel(bestEscort)..
+								" transport="..SC_GetUnitDebugLabel(transport)..
+								" transportPlot="..SC_GetPlotDebug(transportPlot)..
+								" moveTo="..SC_GetPlotDebug(bestMovePlot)..
+								" threats="..tostring(threats)..
+								" escorts="..tostring(escorts)..
+								" score="..tostring(bestScore))
+						elseif SC_GetConfig("TransportHoldWithoutEscort", true) and transport:CanMove() then
+							if SC_TryHoldTransport(transport, "no-escort") then
+								handled = handled + 1
+								debugEscort("transportEscort hold transport="..SC_GetUnitDebugLabel(transport).." threats="..tostring(threats).." escorts="..tostring(escorts).." reason=no-escort")
+							else
+								debugEscort("transportEscort no-escort transport="..SC_GetUnitDebugLabel(transport).." threats="..tostring(threats).." escorts="..tostring(escorts).." reject="..SC_GetMoveRejectStatsDebug(searchStats))
+							end
+						else
+							debugEscort("transportEscort no-escort transport="..SC_GetUnitDebugLabel(transport).." threats="..tostring(threats).." escorts="..tostring(escorts).." reject="..SC_GetMoveRejectStatsDebug(searchStats))
+						end
+					else
+						debugEscort("transportEscort covered transport="..SC_GetUnitDebugLabel(transport).." plot="..SC_GetPlotDebug(transportPlot).." escorts="..tostring(escorts).." threats="..tostring(threats))
+					end
+				end
+			end
+		end
+	end
+	return handled
+end
+
 local function SC_AutomateFinalUnitOrders(player, atWar)
 	if not SC_GetConfig("AutoIdlePosture", true) or player == nil then
 		return 0
@@ -5583,6 +5946,17 @@ local function SC_AutomateFinalUnitOrders(player, atWar)
 		if not done and SC_IsTradeLike(unitInfo) then
 			done = SC_TryUnitActionByType(unit, {MISSION_SKIP = true}) or SC_TryUnitMission(unit, MissionTypes.MISSION_SKIP) or SC_TryUnitMission(unit, GameInfoTypes.MISSION_SKIP)
 		end
+		if not done and atWar and SC_IsFragileTransportUnit(unit, unitInfo) then
+			local transportPlot = unit:GetPlot()
+			local escorts = SC_CountFriendlyNavalEscortsNearPlot(player, transportPlot, SC_GetConfig("TransportEscortRadius", 2))
+			local threats = SC_CountEnemySeaThreatsNearPlot(player, transportPlot, SC_GetConfig("TransportThreatRadius", 6))
+			if escorts <= 0 and SC_GetConfig("TransportHoldWithoutEscort", true) then
+				done = SC_TryHoldTransport(unit, "finalOrders-no-escort")
+				debugFinal("finalOrders transport-hold unit="..SC_GetUnitDebugLabel(unit).." escorts="..tostring(escorts).." threats="..tostring(threats).." done="..SC_BoolText(done).." state="..SC_GetUnitOrderDebug(unit))
+			else
+				debugFinal("finalOrders transport-covered unit="..SC_GetUnitDebugLabel(unit).." escorts="..tostring(escorts).." threats="..tostring(threats))
+			end
+		end
 		if not done and unit:GetDamage() >= SC_GetConfig("HealDamageThreshold", 45) and unit:IsCombatUnit() then
 			if unitKey ~= nil and SC_HEAL_FAILED_THIS_TURN[unitKey] then
 				debugFinal("finalOrders heal-cached-skip unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." state="..SC_GetUnitOrderDebug(unit))
@@ -5606,7 +5980,7 @@ local function SC_AutomateFinalUnitOrders(player, atWar)
 				end
 			end
 		end
-		if not done and SC_IsWorkerLike(unitInfo) then
+		if not done and SC_IsWorkerLike(unitInfo) and not SC_IsFragileTransportUnit(unit, unitInfo) then
 			done = SC_TryUnitCommand(unit, CommandTypes.COMMAND_AUTOMATE, GameInfoTypes.AUTOMATE_BUILD, -1)
 		end
 		if not done and SC_IsExploreLike(unitInfo) then
@@ -5976,9 +6350,11 @@ local function SC_BuildAutomationResults(player, atWar)
 		promotions = 0,
 		heals = 0,
 		defenseActions = 0,
+		captureFinishers = 0,
 		cityStrikes = 0,
 		strategicMoves = 0,
 		stackedMoves = 0,
+		transportEscort = 0,
 		idlePosture = 0,
 		tradeRoutes = 0,
 		finalOrders = 0,
@@ -5992,7 +6368,7 @@ local function SC_BuildAutomationResults(player, atWar)
 	local maxSweeps = SC_GetConfig("MaxTakeoverInnerSweeps", 3)
 	for sweep = 1, maxSweeps, 1 do
 		SC_Debug("sweep begin index="..tostring(sweep).." blocker="..SC_GetBlockingDebug(player))
-		local before = results.cityOrders + results.ideologies + results.research + results.policies + results.upgrades + results.promotions + results.heals + results.defenseActions + results.cityStrikes + results.strategicMoves + results.stackedMoves + results.idlePosture + results.tradeRoutes + results.finalOrders + results.leagues + results.blockers
+		local before = results.cityOrders + results.ideologies + results.research + results.policies + results.upgrades + results.promotions + results.heals + results.captureFinishers + results.defenseActions + results.cityStrikes + results.transportEscort + results.strategicMoves + results.stackedMoves + results.idlePosture + results.tradeRoutes + results.finalOrders + results.leagues + results.blockers
 		local cityOrders, details = SC_AutomateCities(player, atWar)
 		results.cityOrders = results.cityOrders + cityOrders
 		if details ~= nil then
@@ -6008,6 +6384,8 @@ local function SC_BuildAutomationResults(player, atWar)
 		results.upgrades = results.upgrades + SC_AutomateUnitUpgrades(player)
 		results.promotions = results.promotions + SC_AutomateUnitPromotions(player)
 		results.heals = results.heals + SC_AutomateDamagedUnitHealing(player)
+		results.captureFinishers = results.captureFinishers + SC_AutomateCityCaptureFinishers(player, atWar)
+		results.transportEscort = results.transportEscort + SC_AutomateTransportEscort(player, atWar)
 		results.defenseActions = results.defenseActions + SC_AutomateLocalDefense(player, atWar)
 		results.cityStrikes = results.cityStrikes + SC_AutomateCityRangedStrike(player, atWar)
 		results.strategicMoves = results.strategicMoves + SC_AutomateStrategicMovement(player, atWar)
@@ -6019,7 +6397,7 @@ local function SC_BuildAutomationResults(player, atWar)
 			results.leagues = results.leagues + SC_AutomateLeagues(player)
 		end
 		results.blockers = results.blockers + SC_HandleEndTurnBlocker(player, atWar)
-		local after = results.cityOrders + results.ideologies + results.research + results.policies + results.upgrades + results.promotions + results.heals + results.defenseActions + results.cityStrikes + results.strategicMoves + results.stackedMoves + results.idlePosture + results.tradeRoutes + results.finalOrders + results.leagues + results.blockers
+		local after = results.cityOrders + results.ideologies + results.research + results.policies + results.upgrades + results.promotions + results.heals + results.captureFinishers + results.defenseActions + results.cityStrikes + results.transportEscort + results.strategicMoves + results.stackedMoves + results.idlePosture + results.tradeRoutes + results.finalOrders + results.leagues + results.blockers
 		local blocking = SC_GetSafeNumber(function() return player:GetEndTurnBlockingType() end, -999)
 		SC_Debug("sweep end index="..tostring(sweep)..
 			" city="..tostring(results.cityOrders)..
@@ -6027,8 +6405,10 @@ local function SC_BuildAutomationResults(player, atWar)
 			" research="..tostring(results.research)..
 			" policy="..tostring(results.policies)..
 			" promote="..tostring(results.promotions)..
+			" captureFinish="..tostring(results.captureFinishers)..
 			" tactical="..tostring(results.defenseActions)..
 			" cityStrike="..tostring(results.cityStrikes)..
+			" transportEscort="..tostring(results.transportEscort)..
 			" strategicMove="..tostring(results.strategicMoves)..
 			" stacked="..tostring(results.stackedMoves)..
 			" finalOrders="..tostring(results.finalOrders)..
@@ -6066,8 +6446,10 @@ local function SC_SendNationalBrief(player, results, cityDetails, atWar)
 	table.insert(lines, "单位升级: "..tostring(results.upgrades or 0))
 	table.insert(lines, "单位晋升: "..tostring(results.promotions or 0))
 	table.insert(lines, "治疗命令: "..tostring(results.heals or 0))
+	table.insert(lines, "收城动作: "..tostring(results.captureFinishers or 0))
 	table.insert(lines, "单位远程攻击: "..tostring(results.defenseActions or 0))
 	table.insert(lines, "城市炮击: "..tostring(results.cityStrikes or 0))
+	table.insert(lines, "运输护航: "..tostring(results.transportEscort or 0))
 	table.insert(lines, "战略机动: "..tostring(results.strategicMoves or 0))
 	table.insert(lines, "贸易路线: "..tostring(results.tradeRoutes or 0))
 	table.insert(lines, "世界议会: "..tostring(results.leagues or 0))
@@ -6365,6 +6747,7 @@ local function SC_ResetTakeoverPassCounterForTurn()
 		SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN = {}
 		SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 		SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
+		SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN = {}
 		SC_DIRECT_PUSH_FAILED_THIS_TURN = {}
 		SC_HEAL_FAILED_THIS_TURN = {}
 		SC_RANGE_FAILED_THIS_TURN = {}
@@ -6634,8 +7017,10 @@ local function SC_RunTakeoverPass(player, reason, allowEndTurn)
 		" research="..tostring(results.research or 0)..
 		" policy="..tostring(results.policies or 0)..
 		" promote="..tostring(results.promotions or 0)..
+		" captureFinish="..tostring(results.captureFinishers or 0)..
 		" tactical="..tostring(results.defenseActions or 0)..
 		" cityStrike="..tostring(results.cityStrikes or 0)..
+		" transportEscort="..tostring(results.transportEscort or 0)..
 		" strategicMove="..tostring(results.strategicMoves or 0)..
 		" stacked="..tostring(results.stackedMoves or 0)..
 		" finalOrders="..tostring(results.finalOrders or 0)..
