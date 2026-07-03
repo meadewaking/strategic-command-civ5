@@ -1,43 +1,154 @@
-Strategic Command v1
+战略指挥部 / Strategic Command
+================================
 
-Purpose:
-Reduce late-game micromanagement by adding a high-level automation layer.
+《Sid Meier's Civilization V》后期高层托管与微操减负 Mod。
 
-Current MVP features:
-- Adds a visible SC button and a small Strategic Command panel.
-- Every configured interval, posts a national brief notification.
-- Automatically assigns production only to non-puppet, non-resisting cities with an empty queue.
-- In wartime, cities can prioritize modern combat units if the army is below the target size.
-- Ranged combat units can automatically fire at valid war targets when they still have movement.
-- Optional automatic research selection, based on the selected doctrine.
-- Optional automatic unit upgrades.
-- Optional healing orders for damaged combat units.
-- Optional city ranged strike automation.
-- Optional idle posture cleanup for combat units.
-- Buttons to open the tech tree and social policy screen.
+当前版本：v1.22
+状态：Alpha
+支持：单人游戏
+不支持：多人、热座
 
-Configuration:
-Edit Lua/StrategicCommand_Config.lua before loading a game.
+核心目标
+--------
 
-Important defaults:
-- InterventionInterval = 10
-- AutoCityProduction = false
-- AutoLocalDefense = false
-- AutoResearch = false
-- AutoUpgradeUnits = false
-- AutoHealDamagedUnits = false
-- AutoCityRangedStrike = false
-- AutoIdlePosture = false
-- Doctrine = "BALANCED"
+这个 Mod 用于减少文明 5 后期的重复操作：
 
-Supported doctrines:
-- BALANCED
-- SCIENCE
-- INDUSTRY
-- WAR
+- 城市生产队列反复需要补。
+- 大量单位每回合需要命令。
+- 科技、政策、意识形态、伟人、宗教、考古、世界议会和通知弹窗频繁打断。
+- 战争中远程单位、舰队、空军、伤兵和城市炮击需要大量微操。
 
-Roadmap:
-- Diplomatic secretary for low-value trade/contact filtering.
-- Strategic command panel for in-game configuration.
-- Army group orders: rally, defend, attack city, naval expedition.
-- World Congress auto-voting policy.
+战略指挥部提供一个“托管若干回合”的高层指挥面板。玩家先选择外交、经济、建设、生产、战争等倾向，然后让脚本接管 5、10、20 或 50 回合。
+
+主要功能
+--------
+
+1. 托管面板
+
+- 左上角显示“战略”按钮。
+- 支持 5 / 10 / 20 / 50 回合托管。
+- 支持手动执行一次完整托管。
+- 支持停止托管。
+- UI 文本为中文。
+
+2. 战略预设
+
+- 外交：均衡、友好、强硬、孤立。
+- 经济：均衡、科研、财政、扩张。
+- 建设：基建、幸福、科研、防御。
+- 开发：自动、产能、铁路、保守。
+- 生产：建筑、军队、海空、奇观。
+- 战争：防守、推进、总攻、海权。
+- 占城：傀儡、智能、吞并、焚城。
+- 伟人：保留、科研、工程、文化。
+- 宗教：产能、科研、金币、文化。
+- 贸易：均衡、金币、科研、内运。
+- 间谍：反谍、窃技、城邦、外交。
+
+3. 城市与生产
+
+- 自动为城市补充生产队列。
+- 根据战争状态、建筑类型、维护费、预设倾向评分。
+- 避免同一轮给同一城市重复加入同一种建筑或单位。
+- 支持城市炮击。
+
+4. 科技、政策与意识形态
+
+- 自动选择科研。
+- 自动选择社会政策。
+- 自动处理意识形态。
+- 自动处理免费政策和相关通知。
+
+5. 单位控制
+
+- 自动升级单位。
+- 自动选择晋升。
+- 自动治疗伤兵。
+- 自动处理需要命令的单位。
+- 自动处理堆叠单位。
+- 自动执行远程射击和城市炮击。
+- 对空军、导弹、海军和陆地远程单位设置不同战术行动上限。
+
+6. 弹窗与通知
+
+托管期间会尝试处理：
+
+- 占领城市处置。
+- 伟人诞生与免费伟人。
+- 科技完成提示。
+- 政策与意识形态提示。
+- 宗教、万神殿、考古。
+- 世界议会提案与投票。
+- 外交领袖打断。
+- 部分奇观、通知和低价值提示。
+
+7. 自动结束回合
+
+- 阻塞项清理后自动结束回合。
+- 结束回合发送后进入转场静默模式，避免在 AI 回合切换阶段重复下命令。
+- 日志记录结束回合阻塞、重试和静默等待原因。
+
+安装
+----
+
+将目录放到：
+
+Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)
+
+游戏中：
+
+1. 进入 Mods。
+2. 勾选“战略指挥部”。
+3. 载入或开始单人游戏。
+4. 进入游戏后点击左上角“战略”按钮。
+
+配置
+----
+
+配置文件：
+
+Lua\StrategicCommand_Config.lua
+
+常用开关：
+
+- AutoCityProduction：自动城市生产。
+- AutoResearch：自动科研。
+- AutoPolicy：自动政策。
+- AutoPromoteUnits：自动晋升。
+- AutoStrategicMove：自动战略机动。
+- AutoPopupHandling：自动弹窗处理。
+- AutoEndTurn：自动结束回合。
+- DebugLogging：调试日志。
+- DebugUnitCommands：单位命令日志。
+- DebugCityProduction：城市生产评分日志。
+
+日志与测试
+----------
+
+日志会输出 [Strategic Command][SCDBG] 前缀，用于分析托管行为。
+
+辅助脚本位于：
+
+C:\Users\meade\Documents\文明mod
+
+运行测试：
+
+powershell -ExecutionPolicy Bypass -File "C:\Users\meade\Documents\文明mod\Run-StrategicCommandTests.ps1" -SkipLog
+
+收集日志：
+
+powershell -ExecutionPolicy Bypass -File "C:\Users\meade\Documents\文明mod\Collect-StrategicCommandLog.ps1"
+
+已知限制
+--------
+
+- 当前仍是 Alpha 阶段，策略质量还在持续迭代。
+- 部分 Civ5 UI 弹窗和单位命令缺少稳定公开 API，需要 fallback 处理。
+- 航母、舰载机、导弹、远洋舰队和复杂攻城链路仍是后续重点优化方向。
+- 托管目标是减少微操，不保证每个局部操作都优于玩家手动控制。
+
+作者
+----
+
+- meade：需求、测试、玩法设计。
+- Codex：Lua 实现、调试与文档。
