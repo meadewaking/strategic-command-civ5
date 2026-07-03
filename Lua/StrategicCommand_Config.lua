@@ -41,6 +41,8 @@ SC_CONFIG.MaxAirStrikesPerCityPerTurn = 4
 SC_CONFIG.CityCaptureReadyDamageRatio = 0.72
 SC_CONFIG.CapturedCityMaxDamageRatio = 0.45
 SC_CONFIG.CityCaptureStagingSearchRadius = 2
+SC_CONFIG.CaptureReadyAdjacentFirePenalty = 4200
+SC_CONFIG.ProtectedAssetThreatRadius = 6
 
 SC_CONFIG.AutoResearch = true
 SC_CONFIG.AutoPolicy = true
@@ -75,7 +77,7 @@ SC_CONFIG.MaxFinalOrderAttemptsPerUnitPerTurn = 5
 SC_CONFIG.MaxTakeoverInnerSweeps = 5
 SC_CONFIG.MaxNotificationsPerPass = 40
 SC_CONFIG.MaxCityCaptureFinishersPerTurn = 20
-SC_CONFIG.CityCaptureDirectMaxDistance = 1
+SC_CONFIG.CityCaptureDirectMaxDistance = 2
 SC_CONFIG.MaxTransportEscortMovesPerTurn = 30
 SC_CONFIG.TransportEscortRadius = 2
 SC_CONFIG.TransportThreatRadius = 6
@@ -124,8 +126,15 @@ SC_CONFIG.MaxStackEscapeAttemptsPerUnitPerTurn = 8
 SC_CONFIG.MaxStackEscapeCandidatesPerUnit = 10
 SC_CONFIG.StackEscapeSearchRadius = 8
 SC_CONFIG.EnableRangedReposition = true
-SC_CONFIG.CarrierStandoffMinDistance = 5
-SC_CONFIG.CarrierStandoffMaxDistance = 8
+SC_CONFIG.CarrierStandoffMinDistance = 6
+SC_CONFIG.CarrierStandoffMaxDistance = 10
+SC_CONFIG.ArsenalShipStandoffMinDistance = 5
+SC_CONFIG.ArsenalShipStandoffMaxDistance = 8
+SC_CONFIG.MissileScreenStandoffMinDistance = 1
+SC_CONFIG.MissileScreenStandoffMaxDistance = 3
+SC_CONFIG.SubmarineStandoffMinDistance = 2
+SC_CONFIG.SubmarineStandoffMaxDistance = 4
+SC_CONFIG.FleetStandoffThreatRadius = 4
 
 -- City production doctrine. Supported values: BALANCED, SCIENCE, INDUSTRY, WAR.
 SC_CONFIG.Doctrine = "BALANCED"
