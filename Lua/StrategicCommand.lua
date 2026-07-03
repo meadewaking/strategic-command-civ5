@@ -3,7 +3,7 @@
 
 include("StrategicCommand_Config.lua")
 
-local SC_VERSION = "1.27"
+local SC_VERSION = "1.28"
 local SC_LOAD_TURN = -1
 local SC_SAVE_DATA = nil
 local SC_TAKEOVER_SAVE_KEY = "SC_TAKEOVER_REMAINING"
@@ -21,6 +21,7 @@ SC_STRATEGIC_ORDERED_THIS_TURN = {}
 SC_TACTICAL_ORDERED_THIS_TURN = {}
 SC_TACTICAL_NO_TARGET_THIS_TURN = {}
 SC_TACTICAL_QUEUED_THIS_TURN = {}
+SC_ASSAULT_SUPPORT_CACHE_THIS_TURN = {}
 SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
 SC_DIRECT_PUSH_FAILED_THIS_TURN = {}
@@ -1813,47 +1814,244 @@ local function SC_RangeStrike(unit, plot)
 	return false, "unresolved"
 end
 
+function SC_AddScoreReason(reasons, label, value)
+	if reasons == nil or label == nil or value == nil or value == 0 then
+		return
+	end
+	table.insert(reasons, tostring(label)..":"..tostring(math.floor(value)))
+end
+
+function SC_JoinScoreReasons(reasons)
+	if reasons == nil or #reasons <= 0 then
+		return "base"
+	end
+	return table.concat(reasons, ",")
+end
+
+function SC_IsNavalAssaultStrikeRole(role)
+	return role == "missile_carrier"
+		or role == "naval_ranged"
+		or role == "submarine"
+		or role == "carrier_air"
+		or role == "bomber"
+		or role == "missile"
+end
+
+function SC_IsAssaultCaptureRole(role)
+	return role == "fast_assault"
+		or role == "assault"
+		or role == "naval_melee"
+end
+
+function SC_IsRangedSupportRole(role)
+	return role == "missile_carrier"
+		or role == "naval_ranged"
+		or role == "submarine"
+		or role == "siege"
+		or role == "land_ranged"
+		or role == "carrier_air"
+		or role == "fighter"
+		or role == "bomber"
+		or role == "missile"
+end
+
+function SC_GetCityDamageInfo(city)
+	local damage = SC_GetSafeNumber(function() return city:GetDamage() end, 0)
+	local maxHP = SC_GetSafeNumber(function() return city:GetMaxHitPoints() end, 0)
+	local ratio = 0
+	if maxHP ~= nil and maxHP > 0 then
+		ratio = math.max(0, math.min(1.5, damage / maxHP))
+	end
+	return damage, maxHP, ratio
+end
+
+function SC_IsCoastalAssaultPlot(plot)
+	if plot == nil then
+		return false
+	end
+	if SC_IsWaterOrCoastalStrategicPlot ~= nil then
+		return SC_IsWaterOrCoastalStrategicPlot(plot)
+	end
+	local isWater = SC_GetSafeNumber(function() return plot:IsWater() and 1 or 0 end, 0)
+	return isWater > 0
+end
+
+function SC_CountFriendlyRoleNearPlot(player, targetPlot, radius, roleKind, maxCount)
+	if player == nil or targetPlot == nil then
+		return 0
+	end
+	radius = radius or 4
+	maxCount = maxCount or 6
+	local playerID = player:GetID()
+	local count = 0
+	local targetX = targetPlot:GetX()
+	local targetY = targetPlot:GetY()
+	for dx = -radius, radius, 1 do
+		for dy = -radius, radius, 1 do
+			local plot = nil
+			if SC_GetNearbyPlot ~= nil then
+				plot = SC_GetNearbyPlot(targetX, targetY, dx, dy, radius)
+			elseif Map ~= nil then
+				pcall(function() plot = Map.GetPlot(targetX + dx, targetY + dy) end)
+			end
+			if plot ~= nil then
+				local distance = Map.PlotDistance(targetX, targetY, plot:GetX(), plot:GetY())
+				if distance <= radius then
+					local plotUnits = SC_GetSafeNumber(function() return plot:GetNumUnits() end, 0)
+					for i = 0, plotUnits - 1, 1 do
+						local nearbyUnit = nil
+						pcall(function() nearbyUnit = plot:GetUnit(i) end)
+						if nearbyUnit ~= nil and SC_GetSafeNumber(function() return nearbyUnit:GetOwner() end, -1) == playerID then
+							local nearbyInfo = SC_GetUnitInfo(nearbyUnit)
+							local nearbyRole = SC_GetUnitRole(nearbyUnit, nearbyInfo)
+							if (roleKind == "capture" and SC_IsAssaultCaptureRole(nearbyRole))
+								or (roleKind == "support" and SC_IsRangedSupportRole(nearbyRole)) then
+								count = count + 1
+								if count >= maxCount then
+									return count
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return count
+end
+
+function SC_GetAssaultSupportNearPlot(player, targetPlot)
+	local playerID = player ~= nil and player:GetID() or -1
+	local plotIndex = nil
+	pcall(function() plotIndex = targetPlot:GetPlotIndex() end)
+	local cacheKey = nil
+	if plotIndex ~= nil then
+		cacheKey = tostring(playerID).."|"..tostring(plotIndex)
+		local cached = SC_ASSAULT_SUPPORT_CACHE_THIS_TURN[cacheKey]
+		if cached ~= nil then
+			return cached.support or 0, cached.capture or 0
+		end
+	end
+	local support = SC_CountFriendlyRoleNearPlot(player, targetPlot, 5, "support", 5)
+	local capture = SC_CountFriendlyRoleNearPlot(player, targetPlot, 4, "capture", 4)
+	if cacheKey ~= nil then
+		SC_ASSAULT_SUPPORT_CACHE_THIS_TURN[cacheKey] = { support = support, capture = capture }
+	end
+	return support, capture
+end
+
 local function SC_ScoreRangeTarget(player, unit, role, unitPlot, targetPlot, enemyUnit, enemyCity)
 	if unitPlot == nil or targetPlot == nil then
-		return -999999
+		return -999999, "missing-plot"
 	end
 	local distance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), targetPlot:GetX(), targetPlot:GetY())
 	local score = 1000 - distance * 8
+	local reasons = {"dist"..tostring(distance)}
+	local coastalTarget = SC_IsCoastalAssaultPlot(targetPlot)
+	local supportCount = 0
+	local captureCount = 0
 	if enemyUnit ~= nil then
 		local enemyInfo = SC_GetUnitInfo(enemyUnit)
 		local enemyRole = SC_GetUnitRole(enemyUnit, enemyInfo)
-		score = score + SC_GetSafeNumber(function() return enemyUnit:GetDamage() end, 0) * 6
-		score = score + (enemyInfo and ((enemyInfo.Combat or 0) + (enemyInfo.RangedCombat or 0)) or 0) / 2
+		local enemyDamage = SC_GetSafeNumber(function() return enemyUnit:GetDamage() end, 0)
+		local damageScore = enemyDamage * 8
+		score = score + damageScore
+		SC_AddScoreReason(reasons, "unitDamage", damageScore)
+		local powerScore = (enemyInfo and ((enemyInfo.Combat or 0) + (enemyInfo.RangedCombat or 0)) or 0) / 2
+		score = score + powerScore
+		SC_AddScoreReason(reasons, "unitPower", powerScore)
+		if enemyDamage >= 70 then
+			score = score + 320
+			SC_AddScoreReason(reasons, "finishUnit", 320)
+		elseif enemyDamage >= 45 then
+			score = score + 170
+			SC_AddScoreReason(reasons, "woundedUnit", 170)
+		end
+		if role == "missile" or role == "carrier_air" or role == "bomber" then
+			score = score + 420
+			SC_AddScoreReason(reasons, "airClean", 420)
+		end
 		if enemyInfo ~= nil and enemyInfo.Domain == "DOMAIN_SEA" then
 			if role == "naval_ranged" or role == "missile_carrier" or role == "submarine" or role == "carrier_air" or role == "bomber" or role == "missile" then
-				score = score + 260
+				score = score + 360
+				SC_AddScoreReason(reasons, "killNavy", 360)
 			end
 		end
 		if enemyRole == "carrier" or enemyRole == "missile_carrier" or enemyRole == "submarine" then
-			score = score + 240
+			score = score + 300
+			SC_AddScoreReason(reasons, "highValueNaval", 300)
 		end
 		if role == "fighter" and enemyInfo ~= nil and enemyInfo.Domain == "DOMAIN_AIR" then
 			score = score + 300
+			SC_AddScoreReason(reasons, "airDefense", 300)
 		end
 		if role == "siege" and enemyInfo ~= nil and enemyInfo.Domain == "DOMAIN_LAND" then
 			score = score + 80
+			SC_AddScoreReason(reasons, "siegeVsLand", 80)
+		end
+		if SC_IsNavalAssaultStrikeRole(role) and coastalTarget then
+			supportCount, captureCount = SC_GetAssaultSupportNearPlot(player, targetPlot)
+			local assaultScore = 120 + math.min(supportCount, 4) * 60
+			score = score + assaultScore
+			SC_AddScoreReason(reasons, "coastalFront", assaultScore)
+			if captureCount > 0 then
+				local screenScore = math.min(captureCount, 3) * 70
+				score = score + screenScore
+				SC_AddScoreReason(reasons, "clearForCapture", screenScore)
+			end
 		end
 	end
 	if enemyCity ~= nil then
+		local cityDamage, cityMaxHP, cityDamageRatio = SC_GetCityDamageInfo(enemyCity)
 		score = score + 700
-		score = score + SC_GetSafeNumber(function() return enemyCity:GetDamage() end, 0) * 3
+		SC_AddScoreReason(reasons, "city", 700)
+		local cityDamageScore = cityDamage * 4
+		score = score + cityDamageScore
+		SC_AddScoreReason(reasons, "cityDamage", cityDamageScore)
+		if cityDamageRatio >= 0.75 then
+			score = score + 520
+			SC_AddScoreReason(reasons, "captureReady", 520)
+		elseif cityDamageRatio >= 0.45 then
+			score = score + 300
+			SC_AddScoreReason(reasons, "pressDamagedCity", 300)
+		end
+		if coastalTarget and SC_IsNavalAssaultStrikeRole(role) then
+			score = score + 340
+			SC_AddScoreReason(reasons, "coastalCity", 340)
+		end
 		if role == "siege" or role == "bomber" or role == "carrier_air" or role == "missile" then
-			score = score + 280
+			local airCityScore = 220
+			if cityDamageRatio >= 0.45 then
+				airCityScore = airCityScore + 180
+			end
+			score = score + airCityScore
+			SC_AddScoreReason(reasons, "airVsCity", airCityScore)
 		elseif role == "naval_ranged" or role == "missile_carrier" then
-			score = score + 220
+			score = score + 320
+			SC_AddScoreReason(reasons, "shipVsCity", 320)
 		elseif role == "land_ranged" then
 			score = score + 120
+			SC_AddScoreReason(reasons, "rangedVsCity", 120)
+		end
+		if SC_IsNavalAssaultStrikeRole(role) or SC_IsAssaultCaptureRole(role) then
+			supportCount, captureCount = SC_GetAssaultSupportNearPlot(player, targetPlot)
+			if supportCount >= 2 then
+				local focusScore = math.min(supportCount, 5) * 70
+				score = score + focusScore
+				SC_AddScoreReason(reasons, "fleetFocus", focusScore)
+			end
+			if captureCount > 0 and cityDamageRatio >= 0.35 then
+				local captureScore = math.min(captureCount, 4) * 90
+				score = score + captureScore
+				SC_AddScoreReason(reasons, "captureUnitNear", captureScore)
+			end
 		end
 		if SC_GetSafeNumber(function() return enemyCity:IsCapital() and 1 or 0 end, 0) > 0 then
 			score = score + 120
+			SC_AddScoreReason(reasons, "capital", 120)
 		end
 	end
-	return score
+	return score, SC_JoinScoreReasons(reasons)
 end
 
 function SC_GetRangeTargetStatsDebug(stats)
@@ -1867,7 +2065,8 @@ function SC_GetRangeTargetStatsDebug(stats)
 		" outOfRange="..tostring(stats.outOfRange or 0)..
 		" noPlot="..tostring(stats.noPlot or 0)..
 		" bestScore="..tostring(stats.bestScore or "nil")..
-		" bestKind="..tostring(stats.bestKind or "nil")
+		" bestKind="..tostring(stats.bestKind or "nil")..
+		" bestReason="..tostring(stats.bestReason or "nil")
 end
 
 local function SC_FindRangeTarget(player, unit)
@@ -1905,12 +2104,13 @@ local function SC_FindRangeTarget(player, unit)
 					stats.noPlot = stats.noPlot + 1
 				elseif SC_CanRangeStrikeAt(unit, plot) then
 					stats.inRangeUnits = stats.inRangeUnits + 1
-					local score = SC_ScoreRangeTarget(player, unit, role, unitPlot, plot, enemyUnit, nil)
+					local score, reason = SC_ScoreRangeTarget(player, unit, role, unitPlot, plot, enemyUnit, nil)
 					if score > bestScore then
 						bestScore = score
 						bestPlot = plot
 						stats.bestScore = score
 						stats.bestKind = "unit"
+						stats.bestReason = reason
 					end
 				else
 					stats.outOfRange = stats.outOfRange + 1
@@ -1923,12 +2123,13 @@ local function SC_FindRangeTarget(player, unit)
 					stats.noPlot = stats.noPlot + 1
 				elseif SC_CanRangeStrikeAt(unit, plot) then
 					stats.inRangeCities = stats.inRangeCities + 1
-					local score = SC_ScoreRangeTarget(player, unit, role, unitPlot, plot, nil, city)
+					local score, reason = SC_ScoreRangeTarget(player, unit, role, unitPlot, plot, nil, city)
 					if score > bestScore then
 						bestScore = score
 						bestPlot = plot
 						stats.bestScore = score
 						stats.bestKind = "city"
+						stats.bestReason = reason
 					end
 				else
 					stats.outOfRange = stats.outOfRange + 1
@@ -1994,7 +2195,7 @@ local function SC_AutomateLocalDefense(player, atWar)
 								if SC_IsStrikeStatusFired(strikeStatus) then
 									label = "fired"
 								end
-								debugUnit("localDefense "..label.." round="..tostring(round).." unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." status="..tostring(strikeStatus).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
+								debugUnit("localDefense "..label.." round="..tostring(round).." unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." status="..tostring(strikeStatus).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore).." reason="..tostring(targetStats and targetStats.bestReason or "nil"))
 								if unitKey ~= nil then
 									SC_TACTICAL_ORDERED_THIS_TURN[unitKey] = newCount
 									if SC_IsStrikeStatusQueued(strikeStatus) then
@@ -2011,7 +2212,7 @@ local function SC_AutomateLocalDefense(player, atWar)
 								debugUnit("localDefense no-target unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." "..SC_GetRangeTargetStatsDebug(targetStats))
 							else
 								local newCount = SC_RecordTacticalAction(unitKey)
-								debugUnit("localDefense fire-failed unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." status="..tostring(strikeStatus).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
+								debugUnit("localDefense fire-failed unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." status="..tostring(strikeStatus).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore).." reason="..tostring(targetStats and targetStats.bestReason or "nil"))
 								if unitKey ~= nil then
 									SC_TACTICAL_ORDERED_THIS_TURN[unitKey] = newCount
 								end
@@ -3639,47 +3840,119 @@ end
 
 local function SC_ScoreStrategicTarget(player, unit, role, unitPlot, targetPlot, enemyUnit, enemyCity)
 	if unitPlot == nil or targetPlot == nil then
-		return -999999
+		return -999999, "missing-plot"
 	end
 	local distance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), targetPlot:GetX(), targetPlot:GetY())
 	local score = 1000 - distance * 12
+	local reasons = {"dist"..tostring(distance)}
+	local coastalTarget = SC_IsCoastalAssaultPlot(targetPlot)
 	if enemyCity ~= nil then
+		local cityDamage, cityMaxHP, cityDamageRatio = SC_GetCityDamageInfo(enemyCity)
 		score = score + 260
-		score = score + SC_GetSafeNumber(function() return enemyCity:GetDamage() end, 0) * 2
+		SC_AddScoreReason(reasons, "city", 260)
+		local cityDamageScore = cityDamage * 3
+		score = score + cityDamageScore
+		SC_AddScoreReason(reasons, "cityDamage", cityDamageScore)
+		if cityDamageRatio >= 0.75 then
+			score = score + 650
+			SC_AddScoreReason(reasons, "captureReady", 650)
+		elseif cityDamageRatio >= 0.45 then
+			score = score + 360
+			SC_AddScoreReason(reasons, "damagedCity", 360)
+		end
+		local supportCount, captureCount = SC_GetAssaultSupportNearPlot(player, targetPlot)
+		if supportCount >= 2 then
+			local focusScore = math.min(supportCount, 5) * 55
+			score = score + focusScore
+			SC_AddScoreReason(reasons, "fleetNear", focusScore)
+		end
 		if role == "fast_assault" or role == "assault" or role == "naval_melee" then
-			score = score + 180
+			local captureScore = 220
+			if cityDamageRatio >= 0.65 then
+				captureScore = captureScore + 760
+			elseif cityDamageRatio >= 0.35 then
+				captureScore = captureScore + 380
+			else
+				captureScore = captureScore - 120
+			end
+			if captureCount > 0 then
+				captureScore = captureScore + math.min(captureCount, 3) * 80
+			end
+			score = score + captureScore
+			SC_AddScoreReason(reasons, "captureRole", captureScore)
 		end
 		if role == "carrier" then
-			score = score + 120
+			local carrierScore = 120
+			if coastalTarget then
+				carrierScore = carrierScore + 240
+			end
+			score = score + carrierScore
+			SC_AddScoreReason(reasons, "carrierSupport", carrierScore)
 		elseif role == "missile_carrier" or role == "naval_ranged" then
-			score = score + 180
+			local shipScore = 220
+			if coastalTarget then
+				shipScore = shipScore + 300
+			end
+			if cityDamageRatio >= 0.45 then
+				shipScore = shipScore + 180
+			end
+			score = score + shipScore
+			SC_AddScoreReason(reasons, "shipSiege", shipScore)
+		elseif role == "submarine" then
+			local subScore = 120
+			if coastalTarget then
+				subScore = subScore + 180
+			end
+			score = score + subScore
+			SC_AddScoreReason(reasons, "subCoast", subScore)
 		elseif role == "siege" or role == "land_ranged" then
 			score = score + 160
+			SC_AddScoreReason(reasons, "rangedSiege", 160)
 		end
 		if SC_GetSafeNumber(function() return enemyCity:IsCapital() and 1 or 0 end, 0) > 0 then
 			score = score + 120
+			SC_AddScoreReason(reasons, "capital", 120)
 		end
 	elseif enemyUnit ~= nil then
 		local enemyInfo = SC_GetUnitInfo(enemyUnit)
 		local enemyRole = SC_GetUnitRole(enemyUnit, enemyInfo)
-		score = score + 120 + SC_GetSafeNumber(function() return enemyUnit:GetDamage() end, 0) * 5
+		local enemyDamage = SC_GetSafeNumber(function() return enemyUnit:GetDamage() end, 0)
+		score = score + 120 + enemyDamage * 6
+		SC_AddScoreReason(reasons, "unit", 120 + enemyDamage * 6)
+		if enemyDamage >= 70 then
+			score = score + 240
+			SC_AddScoreReason(reasons, "finishUnit", 240)
+		elseif enemyDamage >= 45 then
+			score = score + 120
+			SC_AddScoreReason(reasons, "woundedUnit", 120)
+		end
 		if role == "submarine" and enemyInfo ~= nil and enemyInfo.Domain == "DOMAIN_SEA" then
-			score = score + 280
+			score = score + 360
+			SC_AddScoreReason(reasons, "subHuntNavy", 360)
 		elseif role == "naval_melee" and enemyInfo ~= nil and enemyInfo.Domain == "DOMAIN_SEA" then
-			score = score + 180
+			score = score + 220
+			SC_AddScoreReason(reasons, "navalMelee", 220)
 		elseif role == "fast_assault" and enemyInfo ~= nil and enemyInfo.Domain == "DOMAIN_LAND" then
 			score = score + 160
+			SC_AddScoreReason(reasons, "fastVsLand", 160)
 		end
 		if enemyRole == "carrier" or enemyRole == "missile_carrier" or enemyRole == "siege" or enemyRole == "land_ranged" then
-			score = score + 120
+			score = score + 200
+			SC_AddScoreReason(reasons, "highValueUnit", 200)
 		end
 		if role == "carrier" and (enemyRole == "carrier" or enemyRole == "missile_carrier" or enemyRole == "naval_ranged") then
 			score = score + 180
+			SC_AddScoreReason(reasons, "carrierThreat", 180)
 		elseif (role == "missile_carrier" or role == "naval_ranged") and enemyInfo ~= nil and (enemyInfo.Domain == "DOMAIN_SEA" or enemyRole == "siege" or enemyRole == "land_ranged") then
+			score = score + 240
+			SC_AddScoreReason(reasons, "shipFireTarget", 240)
+		end
+		if coastalTarget and (role == "missile_carrier" or role == "naval_ranged" or role == "submarine" or role == "naval_melee") then
 			score = score + 160
+			SC_AddScoreReason(reasons, "coastalFront", 160)
 		end
 	end
-	return score
+	return score, SC_JoinScoreReasons(reasons)
 end
 
 local function SC_FindStrategicTarget(player, unit)
@@ -4151,15 +4424,19 @@ function SC_FindStandoffMovePlot(player, unit, role, targetPlot, reserved, stats
 	local range = SC_GetUnitRangeValue(unit, unitInfo)
 	local minRange = 2
 	local maxRange = math.max(range, 3)
+	local desiredRange = range
 	if role == "carrier" then
 		minRange = SC_GetConfig("CarrierStandoffMinDistance", 5)
 		maxRange = SC_GetConfig("CarrierStandoffMaxDistance", 8)
+		desiredRange = math.floor((minRange + maxRange) / 2 + 0.5)
 	elseif role == "missile_carrier" or role == "naval_ranged" then
 		minRange = math.max(2, math.min(range, 4))
 		maxRange = math.max(range, 4)
+		desiredRange = math.max(range, minRange)
 	elseif role == "siege" or role == "land_ranged" then
 		minRange = math.max(2, math.min(range, 3))
 		maxRange = math.max(range, 3)
+		desiredRange = math.max(range, minRange)
 	end
 	local currentDistance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), targetPlot:GetX(), targetPlot:GetY())
 	local bestPlot = nil
@@ -4174,9 +4451,24 @@ function SC_FindStandoffMovePlot(player, unit, role, targetPlot, reserved, stats
 				if targetDistance >= minRange and targetDistance <= maxRange then
 					local usable, moveDistance = SC_MoveCandidateIsUsable(player, unit, unitInfo, unitPlot, plot, layer, reserved, nil, stats)
 					if usable and moveDistance > 0 then
-						local score = 1000 - moveDistance * 8 - math.abs(targetDistance - range) * 35
+						local score = 1000 - moveDistance * 8 - math.abs(targetDistance - desiredRange) * 35
 						if role == "naval_ranged" or role == "missile_carrier" then
 							score = score + 80
+						end
+						if role == "carrier" then
+							score = score + 120
+							local owner = SC_GetSafeNumber(function() return plot:GetOwner() end, -1)
+							if owner == player:GetID() then
+								score = score + 120
+							elseif owner < 0 then
+								score = score + 50
+							end
+							if targetDistance <= minRange then
+								score = score - 180
+							end
+						end
+						if (role == "naval_ranged" or role == "missile_carrier" or role == "carrier") and SC_IsCoastalAssaultPlot(plot) then
+							score = score + 70
 						end
 						if currentDistance < minRange and targetDistance > currentDistance then
 							score = score + 160
@@ -4230,6 +4522,7 @@ function SC_GetStrategicPlanStatsDebug(stats)
 		" stationary="..tostring(stats.stationary or 0)..
 		" bestScore="..tostring(stats.bestScore or "nil")..
 		" bestKind="..tostring(stats.bestKind or "nil")..
+		" bestReason="..tostring(stats.bestReason or "nil")..
 		" "..SC_GetMoveRejectStatsDebug(stats)
 end
 
@@ -4260,9 +4553,10 @@ function SC_FindStrategicMovePlan(player, unit, reservedMovePlots)
 			stats.noPlot = stats.noPlot + 1
 			return
 		end
-		local targetScore = SC_ScoreStrategicTarget(player, unit, role, unitPlot, targetPlot, enemyUnit, enemyCity)
+		local targetScore, targetReason = SC_ScoreStrategicTarget(player, unit, role, unitPlot, targetPlot, enemyUnit, enemyCity)
 		if (role == "carrier" or role == "missile_carrier" or role == "naval_ranged" or role == "submarine" or role == "naval_melee") and SC_IsWaterOrCoastalStrategicPlot(targetPlot) then
 			targetScore = targetScore + 160
+			targetReason = tostring(targetReason or "base")..",waterCoast:160"
 		end
 		local movePlot = targetPlot
 		local mode = "direct"
@@ -4298,6 +4592,7 @@ function SC_FindStrategicMovePlan(player, unit, reservedMovePlots)
 				movePlot = movePlot,
 				mode = mode,
 				kind = kind,
+				reason = targetReason,
 				targetScore = targetScore,
 				planScore = planScore,
 				moveDistance = moveDistance,
@@ -4305,6 +4600,7 @@ function SC_FindStrategicMovePlan(player, unit, reservedMovePlots)
 			}
 			stats.bestScore = planScore
 			stats.bestKind = kind
+			stats.bestReason = targetReason
 		end
 	end
 	for otherID, otherPlayer in pairs(Players) do
@@ -4390,6 +4686,7 @@ local function SC_AutomateStrategicMovement(player, atWar)
 								" distance="..tostring(distance)..
 								" targetDistance="..tostring(plan.targetDistance)..
 								" score="..tostring(plan.planScore)..
+								" reason="..tostring(plan.reason or "nil")..
 								" "..SC_GetStrategicPlanStatsDebug(planStats))
 							local ok = SC_TryMoveMission(unit, movePlot, "strategic")
 							if ok then
@@ -4409,6 +4706,7 @@ local function SC_AutomateStrategicMovement(player, atWar)
 									" kind="..tostring(plan.kind)..
 									" target="..SC_GetPlotDebug(targetPlot)..
 									" moveTo="..SC_GetPlotDebug(movePlot)..
+									" reason="..tostring(plan.reason or "nil")..
 									" state="..SC_GetUnitOrderDebug(unit)..
 									" "..SC_GetStrategicPlanStatsDebug(planStats))
 								if unitKey ~= nil then
@@ -5047,7 +5345,7 @@ local function SC_AutomateFinalUnitOrders(player, atWar)
 						if SC_IsStrikeStatusFired(strikeStatus) then
 							label = "fired"
 						end
-						debugFinal("finalOrders tactical-"..label.." unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." status="..tostring(strikeStatus).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
+						debugFinal("finalOrders tactical-"..label.." unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." status="..tostring(strikeStatus).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore).." reason="..tostring(targetStats and targetStats.bestReason or "nil"))
 						if unitKey ~= nil then
 							if SC_IsStrikeStatusQueued(strikeStatus) then
 								SC_RecordTacticalQueued(unit, unitKey, role, targetPlot, strikeStatus, "finalOrders")
@@ -5057,7 +5355,7 @@ local function SC_AutomateFinalUnitOrders(player, atWar)
 							end
 						end
 					else
-						debugFinal("finalOrders tactical-failed unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." status="..tostring(strikeStatus).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore))
+						debugFinal("finalOrders tactical-failed unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." attempt="..tostring(attemptCount + 1).." status="..tostring(strikeStatus).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore).." reason="..tostring(targetStats and targetStats.bestReason or "nil"))
 					end
 				else
 					SC_RecordTacticalNoTarget(unit, unitKey, role, targetStats, "out-of-range")
@@ -5854,6 +6152,7 @@ local function SC_ResetTakeoverPassCounterForTurn()
 		SC_TACTICAL_ORDERED_THIS_TURN = {}
 		SC_TACTICAL_NO_TARGET_THIS_TURN = {}
 		SC_TACTICAL_QUEUED_THIS_TURN = {}
+		SC_ASSAULT_SUPPORT_CACHE_THIS_TURN = {}
 		SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 		SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
 		SC_DIRECT_PUSH_FAILED_THIS_TURN = {}
