@@ -90,6 +90,7 @@ SC_CONFIG.AutoEndTurnRetryInterval = 0.75
 SC_CONFIG.MaxAutoEndTurnSendsPerTurn = 6
 SC_CONFIG.DirectPushMissionFallback = true
 SC_CONFIG.DirectPushTargetedMissionFallback = true
+SC_CONFIG.DirectPushMoveMissionFallback = true
 SC_CONFIG.AvoidObsoleteFallbackUnits = true
 SC_CONFIG.MaxFallbackUnitEraGap = 2
 SC_CONFIG.MinLateGameFallbackCombatPower = 45

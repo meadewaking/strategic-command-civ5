@@ -3,7 +3,7 @@
 
 include("StrategicCommand_Config.lua")
 
-local SC_VERSION = "1.25"
+local SC_VERSION = "1.26"
 local SC_LOAD_TURN = -1
 local SC_SAVE_DATA = nil
 local SC_TAKEOVER_SAVE_KEY = "SC_TAKEOVER_REMAINING"
@@ -417,6 +417,39 @@ local function SC_TryMoveMission(unit, plot, reason, requirePlotChange)
 			" changedPlot="..SC_BoolText(changedPlot)..
 			" requirePlotChange="..SC_BoolText(requirePlotChange == true)..
 			" state="..SC_GetUnitOrderDebug(unit))
+	end
+	if not accepted and SC_GetConfig("DirectPushMoveMissionFallback", true) then
+		local directOk, directErr = pcall(function()
+			unit:PushMission(mission, plot:GetX(), plot:GetY(), 0, 0, 1, mission, beforePlot, unit)
+		end)
+		local directAfterPlot = nil
+		local directAfterIndex = nil
+		pcall(function() directAfterPlot = unit:GetPlot() end)
+		pcall(function()
+			if directAfterPlot ~= nil then
+				directAfterIndex = directAfterPlot:GetPlotIndex()
+			end
+		end)
+		local directNeedsOrder = false
+		if SC_UnitNeedsOrder ~= nil then
+			directNeedsOrder = SC_UnitNeedsOrder(unit)
+		end
+		local directChangedPlot = beforeIndex ~= nil and directAfterIndex ~= nil and beforeIndex ~= directAfterIndex
+		local directAccepted = directOk and (directChangedPlot or (not requirePlotChange and not directNeedsOrder))
+		if SC_GetConfig("DebugUnitCommands", true) then
+			SC_Debug("moveMission direct-fallback unit="..SC_GetUnitDebugLabel(unit)..
+				" reason="..tostring(reason)..
+				" target="..SC_GetPlotDebug(plot)..
+				" ok="..SC_BoolText(directOk)..
+				" err="..tostring(directErr)..
+				" accepted="..SC_BoolText(directAccepted)..
+				" changedPlot="..SC_BoolText(directChangedPlot)..
+				" requirePlotChange="..SC_BoolText(requirePlotChange == true)..
+				" state="..SC_GetUnitOrderDebug(unit))
+		end
+		if directAccepted then
+			return true
+		end
 	end
 	return accepted
 end
@@ -1537,7 +1570,7 @@ local function SC_RangeStrike(unit, plot)
 			end
 			resolved, status = finishIfStrikeResolved(before, reason, allowOrderClear)
 			if resolved then
-				SC_Debug("rangeStrike queued-after-fallback unit="..SC_GetUnitDebugLabel(unit)..
+				SC_Debug("rangeStrike post-fallback-resolved unit="..SC_GetUnitDebugLabel(unit)..
 					" mission="..SC_GetEnumDebugName(MissionTypes, missionType)..
 					" reason="..tostring(reason)..
 					" directTried="..SC_BoolText(directTried)..
@@ -3624,6 +3657,46 @@ local function SC_GetPlotIndexSafe(plot)
 	return nil
 end
 
+function SC_GetMoveReserveKey(plot, layer)
+	local plotIndex = SC_GetPlotIndexSafe(plot)
+	if plotIndex == nil or layer == nil then
+		return nil
+	end
+	return tostring(plotIndex).."|"..tostring(layer)
+end
+
+function SC_IsMovePlotReserved(reserved, plot, layer)
+	if reserved == nil then
+		return false
+	end
+	local reserveKey = SC_GetMoveReserveKey(plot, layer)
+	return reserveKey ~= nil and reserved[reserveKey] == true
+end
+
+function SC_ReserveMovePlot(reserved, plot, layer)
+	if reserved == nil then
+		return
+	end
+	local reserveKey = SC_GetMoveReserveKey(plot, layer)
+	if reserveKey ~= nil then
+		reserved[reserveKey] = true
+	end
+end
+
+function SC_BumpMoveReject(stats, name)
+	if stats ~= nil and name ~= nil then
+		stats[name] = (stats[name] or 0) + 1
+	end
+end
+
+function SC_IsRejectedMovePlot(rejected, plot)
+	if rejected == nil then
+		return false
+	end
+	local plotIndex = SC_GetPlotIndexSafe(plot)
+	return plotIndex ~= nil and rejected[plotIndex] == true
+end
+
 local function SC_PlotHasOwnStackLayer(player, plot, layer, ignoreUnit)
 	if player == nil or plot == nil or layer == nil then
 		return false
@@ -3643,6 +3716,65 @@ local function SC_PlotHasOwnStackLayer(player, plot, layer, ignoreUnit)
 	return false
 end
 
+function SC_MoveCandidateIsUsable(player, unit, unitInfo, sourcePlot, plot, layer, reserved, rejected, stats)
+	if player == nil or unit == nil or unitInfo == nil or sourcePlot == nil or plot == nil then
+		SC_BumpMoveReject(stats, "moveNoPlot")
+		return false, nil
+	end
+	if plot == sourcePlot then
+		SC_BumpMoveReject(stats, "moveStationary")
+		return false, nil
+	end
+	if SC_PlotWouldRequireNewWar(player, plot) then
+		SC_BumpMoveReject(stats, "newWar")
+		return false, nil
+	end
+	if SC_PlotHasEnemyUnit(player, plot) then
+		SC_BumpMoveReject(stats, "hostile")
+		return false, nil
+	end
+	if not SC_PlotMatchesUnitDomain(unitInfo, plot) then
+		SC_BumpMoveReject(stats, "domain")
+		return false, nil
+	end
+	if SC_PlotHasOwnStackLayer(player, plot, layer, unit) then
+		SC_BumpMoveReject(stats, "sameLayer")
+		return false, nil
+	end
+	if SC_IsMovePlotReserved(reserved, plot, layer) then
+		SC_BumpMoveReject(stats, "reserved")
+		return false, nil
+	end
+	if SC_IsRejectedMovePlot(rejected, plot) then
+		SC_BumpMoveReject(stats, "rejected")
+		return false, nil
+	end
+	local distance = Map.PlotDistance(sourcePlot:GetX(), sourcePlot:GetY(), plot:GetX(), plot:GetY())
+	if distance <= 1 then
+		local checked, canMoveInto = pcall(function() return unit:CanMoveInto(plot, 0) end)
+		if not checked or not canMoveInto then
+			SC_BumpMoveReject(stats, "blocked")
+			return false, distance
+		end
+	end
+	return true, distance
+end
+
+function SC_GetMoveRejectStatsDebug(stats)
+	if stats == nil then
+		return "reject=nil"
+	end
+	return "rejectDomain="..tostring(stats.domain or 0)..
+		" rejectNoPlot="..tostring(stats.moveNoPlot or 0)..
+		" rejectStationary="..tostring(stats.moveStationary or 0)..
+		" rejectSameLayer="..tostring(stats.sameLayer or 0)..
+		" rejectReserved="..tostring(stats.reserved or 0)..
+		" rejectRejected="..tostring(stats.rejected or 0)..
+		" rejectBlocked="..tostring(stats.blocked or 0)..
+		" rejectHostile="..tostring(stats.hostile or 0)..
+		" rejectNewWar="..tostring(stats.newWar or 0)
+end
+
 local function SC_FindStackEscapePlot(player, unit, sourcePlot, reserved, rejected, stats)
 	if player == nil or unit == nil or sourcePlot == nil then
 		return nil
@@ -3654,35 +3786,12 @@ local function SC_FindStackEscapePlot(player, unit, sourcePlot, reserved, reject
 	local bestPlot = nil
 	local bestScore = -999999
 	local maxRadius = SC_GetConfig("StackEscapeSearchRadius", 8)
-	local function bump(name)
-		if stats ~= nil then
-			stats[name] = (stats[name] or 0) + 1
-		end
-	end
 	for radius = 1, maxRadius, 1 do
 		for dx = -radius, radius, 1 do
 			for dy = -radius, radius, 1 do
 				local plot = SC_GetNearbyPlot(sourceX, sourceY, dx, dy, radius)
-				if plot ~= nil and plot ~= sourcePlot and not SC_PlotWouldRequireNewWar(player, plot) and not SC_PlotHasEnemyUnit(player, plot) then
-					local plotIndex = SC_GetPlotIndexSafe(plot)
-					local reserveKey = tostring(plotIndex).."|"..tostring(layer)
-					local reservedLayer = reserved ~= nil and reserved[reserveKey] == true
-					local rejectedPlot = rejected ~= nil and plotIndex ~= nil and rejected[plotIndex] == true
-					local sameLayer = SC_PlotHasOwnStackLayer(player, plot, layer, unit)
-					local domainOK = false
-					if unitInfo ~= nil then
-						domainOK = SC_PlotMatchesUnitDomain(unitInfo, plot)
-					end
-					local canMoveInto = false
-					local checked = false
-					local distance = Map.PlotDistance(sourceX, sourceY, plot:GetX(), plot:GetY())
-					if distance <= 1 then
-						checked, canMoveInto = pcall(function() return unit:CanMoveInto(plot, 0) end)
-					else
-						checked = true
-						canMoveInto = true
-					end
-					if checked and canMoveInto and domainOK and not sameLayer and not reservedLayer and not rejectedPlot then
+				local usable, distance = SC_MoveCandidateIsUsable(player, unit, unitInfo, sourcePlot, plot, layer, reserved, rejected, stats)
+				if usable then
 						local score = 1000 - distance * 25
 						local owner = SC_GetSafeNumber(function() return plot:GetOwner() end, -1)
 						if owner == player:GetID() then
@@ -3694,21 +3803,6 @@ local function SC_FindStackEscapePlot(player, unit, sourcePlot, reserved, reject
 							bestScore = score
 							bestPlot = plot
 						end
-					else
-						if not domainOK then
-							bump("domain")
-						elseif sameLayer then
-							bump("sameLayer")
-						elseif reservedLayer then
-							bump("reserved")
-						elseif rejectedPlot then
-							bump("rejected")
-						elseif not checked or not canMoveInto then
-							bump("blocked")
-						end
-					end
-				elseif plot ~= nil and plot ~= sourcePlot then
-					bump("hostile")
 				end
 			end
 		end
@@ -3795,18 +3889,20 @@ local function SC_AutomateStackedUnits(player)
 								SC_Debug("stacked no-destination unit="..SC_GetUnitDebugLabel(unit)..
 									" attempts="..tostring(attemptCount + 1)..
 									" plot="..SC_GetPlotDebug(stack.Plot)..
+									" noPlot="..tostring(searchStats.moveNoPlot or 0)..
+									" stationary="..tostring(searchStats.moveStationary or 0)..
 									" domain="..tostring(searchStats.domain or 0)..
 									" sameLayer="..tostring(searchStats.sameLayer or 0)..
 									" reserved="..tostring(searchStats.reserved or 0)..
 									" rejected="..tostring(searchStats.rejected or 0)..
 									" blocked="..tostring(searchStats.blocked or 0)..
-									" hostile="..tostring(searchStats.hostile or 0))
+									" hostile="..tostring(searchStats.hostile or 0)..
+									" newWar="..tostring(searchStats.newWar or 0))
 							end
 							break
 						end
 						if SC_TryMoveMission(unit, movePlot, "stacked", true) then
-							local reserveKey = tostring(SC_GetPlotIndexSafe(movePlot)).."|"..SC_GetUnitStackLayer(unit)
-							reserved[reserveKey] = true
+							SC_ReserveMovePlot(reserved, movePlot, SC_GetUnitStackLayer(unit))
 							if unitKey ~= nil then
 								SC_STACK_MOVE_ATTEMPTED_THIS_TURN[unitKey] = maxAttempts
 							end
@@ -3860,7 +3956,7 @@ local function SC_AutomateStackedUnits(player)
 	return moved
 end
 
-function SC_FindStandoffMovePlot(player, unit, role, targetPlot)
+function SC_FindStandoffMovePlot(player, unit, role, targetPlot, reserved, stats)
 	if player == nil or unit == nil or targetPlot == nil then
 		return nil
 	end
@@ -3886,38 +3982,30 @@ function SC_FindStandoffMovePlot(player, unit, role, targetPlot)
 	local bestPlot = nil
 	local bestScore = -999999
 	local searchRange = math.max(maxRange + 2, 5)
+	local layer = SC_GetUnitStackLayer(unit)
 	for dx = -searchRange, searchRange, 1 do
 		for dy = -searchRange, searchRange, 1 do
 			local plot = SC_GetNearbyPlot(targetPlot:GetX(), targetPlot:GetY(), dx, dy, searchRange)
-			if plot ~= nil and plot ~= targetPlot and SC_PlotMatchesUnitDomain(unitInfo, plot) and not SC_PlotWouldRequireNewWar(player, plot) then
+			if plot ~= nil and plot ~= targetPlot then
 				local targetDistance = Map.PlotDistance(plot:GetX(), plot:GetY(), targetPlot:GetX(), targetPlot:GetY())
-				if targetDistance >= minRange and targetDistance <= maxRange and not SC_PlotHasEnemyUnit(player, plot) then
-					local moveDistance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), plot:GetX(), plot:GetY())
-					local canEnter = true
-					if moveDistance <= 1 then
-						local checked, canMoveInto = pcall(function() return unit:CanMoveInto(plot, 0) end)
-						if checked then
-							canEnter = canMoveInto
+				if targetDistance >= minRange and targetDistance <= maxRange then
+					local usable, moveDistance = SC_MoveCandidateIsUsable(player, unit, unitInfo, unitPlot, plot, layer, reserved, nil, stats)
+					if usable and moveDistance > 0 then
+						local score = 1000 - moveDistance * 8 - math.abs(targetDistance - range) * 35
+						if role == "naval_ranged" or role == "missile_carrier" then
+							score = score + 80
 						end
-					end
-					if canEnter then
-						if moveDistance > 0 then
-							local score = 1000 - moveDistance * 8 - math.abs(targetDistance - range) * 35
-							if role == "naval_ranged" or role == "missile_carrier" then
-								score = score + 80
-							end
-							if currentDistance < minRange and targetDistance > currentDistance then
-								score = score + 160
-							elseif currentDistance > maxRange and targetDistance < currentDistance then
-								score = score + 120
-							end
-							if role == "siege" or role == "land_ranged" then
-								score = score + 60
-							end
-							if score > bestScore then
-								bestScore = score
-								bestPlot = plot
-							end
+						if currentDistance < minRange and targetDistance > currentDistance then
+							score = score + 160
+						elseif currentDistance > maxRange and targetDistance < currentDistance then
+							score = score + 120
+						end
+						if role == "siege" or role == "land_ranged" then
+							score = score + 60
+						end
+						if score > bestScore then
+							bestScore = score
+							bestPlot = plot
 						end
 					end
 				end
@@ -3958,10 +4046,11 @@ function SC_GetStrategicPlanStatsDebug(stats)
 		" noMovePlot="..tostring(stats.noMovePlot or 0)..
 		" stationary="..tostring(stats.stationary or 0)..
 		" bestScore="..tostring(stats.bestScore or "nil")..
-		" bestKind="..tostring(stats.bestKind or "nil")
+		" bestKind="..tostring(stats.bestKind or "nil")..
+		" "..SC_GetMoveRejectStatsDebug(stats)
 end
 
-function SC_FindStrategicMovePlan(player, unit)
+function SC_FindStrategicMovePlan(player, unit, reservedMovePlots)
 	if player == nil or unit == nil then
 		return nil, nil
 	end
@@ -3995,7 +4084,7 @@ function SC_FindStrategicMovePlan(player, unit)
 		local movePlot = targetPlot
 		local mode = "direct"
 		if SC_GetConfig("EnableRangedReposition", true) and SC_IsStrategicRangedMoveRole(role) then
-			movePlot = SC_FindStandoffMovePlot(player, unit, role, targetPlot)
+			movePlot = SC_FindStandoffMovePlot(player, unit, role, targetPlot, reservedMovePlots, stats)
 			mode = "standoff"
 		end
 		if movePlot == nil then
@@ -4078,6 +4167,7 @@ local function SC_AutomateStrategicMovement(player, atWar)
 	local maxMoves = SC_GetConfig("MaxStrategicMovesPerTurn", 80)
 	local debugCount = 0
 	local debugLimit = SC_GetConfig("DebugUnitDecisionLimit", 60)
+	local reservedMovePlots = {}
 	local function debugMove(text)
 		if SC_GetConfig("DebugUnitDecisions", true) and debugCount < debugLimit then
 			debugCount = debugCount + 1
@@ -4098,7 +4188,7 @@ local function SC_AutomateStrategicMovement(player, atWar)
 			elseif unitKey ~= nil and SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] then
 				debugMove("strategicMove turn-skip unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role))
 			elseif SC_CanStrategicMoveRole(role) then
-				local plan, planStats = SC_FindStrategicMovePlan(player, unit)
+				local plan, planStats = SC_FindStrategicMovePlan(player, unit, reservedMovePlots)
 				local unitPlot = unit:GetPlot()
 				if plan ~= nil and unitPlot ~= nil then
 					local targetPlot = plan.targetPlot
@@ -4120,6 +4210,9 @@ local function SC_AutomateStrategicMovement(player, atWar)
 								" "..SC_GetStrategicPlanStatsDebug(planStats))
 							local ok = SC_TryMoveMission(unit, movePlot, "strategic")
 							if ok then
+								if mode == "standoff" then
+									SC_ReserveMovePlot(reservedMovePlots, movePlot, SC_GetUnitStackLayer(unit))
+								end
 								if unitKey ~= nil then
 									SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = true
 									SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = nil
@@ -4127,7 +4220,14 @@ local function SC_AutomateStrategicMovement(player, atWar)
 								end
 								moved = moved + 1
 							else
-								debugMove("strategicMove mission-failed unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role))
+								debugMove("strategicMove mission-failed unit="..SC_GetUnitDebugLabel(unit)..
+									" role="..tostring(role)..
+									" mode="..mode..
+									" kind="..tostring(plan.kind)..
+									" target="..SC_GetPlotDebug(targetPlot)..
+									" moveTo="..SC_GetPlotDebug(movePlot)..
+									" state="..SC_GetUnitOrderDebug(unit)..
+									" "..SC_GetStrategicPlanStatsDebug(planStats))
 								if unitKey ~= nil then
 									SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = true
 								end
@@ -5496,6 +5596,7 @@ function SC_ApplyStrategicProfiles()
 	SC_CONFIG.AutoEspionage = true
 SC_CONFIG.DirectPushMissionFallback = true
 SC_CONFIG.DirectPushTargetedMissionFallback = true
+SC_CONFIG.DirectPushMoveMissionFallback = true
 SC_CONFIG.AvoidObsoleteFallbackUnits = true
 SC_CONFIG.MaxFallbackUnitEraGap = 2
 SC_CONFIG.MinLateGameFallbackCombatPower = 45
