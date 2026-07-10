@@ -3,7 +3,7 @@
 
 include("StrategicCommand_Config.lua")
 
-local SC_VERSION = "1.31"
+local SC_VERSION = "1.32"
 local SC_LOAD_TURN = -1
 local SC_SAVE_DATA = nil
 local SC_TAKEOVER_SAVE_KEY = "SC_TAKEOVER_REMAINING"
@@ -23,6 +23,11 @@ SC_TACTICAL_NO_TARGET_THIS_TURN = {}
 SC_TACTICAL_QUEUED_THIS_TURN = {}
 SC_ASSAULT_SUPPORT_CACHE_THIS_TURN = {}
 SC_PROTECTED_ASSET_CACHE_THIS_TURN = {}
+SC_UNIT_CAPABILITY_CACHE = {}
+SC_OPERATION_TARGET_CACHE_THIS_TURN = {}
+SC_OPERATION_FOCUS_THIS_TURN = {}
+SC_RETREAT_THREAT_CACHE_THIS_TURN = {}
+SC_SEA_THREAT_CACHE_THIS_TURN = {}
 SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN = {}
 SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
@@ -431,12 +436,23 @@ local function SC_TryMoveMission(unit, plot, reason, requirePlotChange)
 	if unit == nil or plot == nil then
 		return false
 	end
+	local ownerID = SC_GetSafeNumber(function() return unit:GetOwner() end, -1)
+	local owner = Players ~= nil and Players[ownerID] or nil
+	if owner ~= nil and SC_PlotWouldRequireNewWar ~= nil and SC_PlotWouldRequireNewWar(owner, plot) then
+		SC_Debug("moveMission diplomacy-block unit="..SC_GetUnitDebugLabel(unit)..
+			" reason="..tostring(reason)..
+			" target="..SC_GetPlotDebug(plot))
+		return false
+	end
 	local mission = SC_GetMissionID("MISSION_MOVE_TO")
 	if mission == nil then
 		return false
 	end
 	local beforePlot = nil
 	local beforeIndex = nil
+	local beforeMoves = SC_GetSafeNumber(function() return unit:MovesLeft() end, -1)
+	local beforeTargetOwner = SC_GetSafeNumber(function() return plot:GetOwner() end, -1)
+	local beforeTargetUnits = SC_GetSafeNumber(function() return plot:GetNumUnits() end, 0)
 	pcall(function() beforePlot = unit:GetPlot() end)
 	pcall(function()
 		if beforePlot ~= nil then
@@ -449,6 +465,9 @@ local function SC_TryMoveMission(unit, plot, reason, requirePlotChange)
 	end
 	local afterPlot = nil
 	local afterIndex = nil
+	local afterMoves = SC_GetSafeNumber(function() return unit:MovesLeft() end, -1)
+	local afterTargetOwner = SC_GetSafeNumber(function() return plot:GetOwner() end, -1)
+	local afterTargetUnits = SC_GetSafeNumber(function() return plot:GetNumUnits() end, 0)
 	pcall(function() afterPlot = unit:GetPlot() end)
 	pcall(function()
 		if afterPlot ~= nil then
@@ -460,13 +479,18 @@ local function SC_TryMoveMission(unit, plot, reason, requirePlotChange)
 		needsOrder = SC_UnitNeedsOrder(unit)
 	end
 	local changedPlot = beforeIndex ~= nil and afterIndex ~= nil and beforeIndex ~= afterIndex
-	local accepted = changedPlot or (not requirePlotChange and not needsOrder)
+	local combatResolved = (afterMoves >= 0 and beforeMoves >= 0 and afterMoves < beforeMoves)
+		or (afterTargetUnits < beforeTargetUnits)
+		or (beforeTargetOwner ~= afterTargetOwner)
+	local accepted = changedPlot or combatResolved or (not requirePlotChange and not needsOrder)
 	if SC_GetConfig("DebugUnitCommands", true) then
 		SC_Debug("moveMission unit="..SC_GetUnitDebugLabel(unit)..
 			" reason="..tostring(reason)..
 			" target="..SC_GetPlotDebug(plot)..
 			" accepted="..SC_BoolText(accepted)..
 			" changedPlot="..SC_BoolText(changedPlot)..
+			" combatResolved="..SC_BoolText(combatResolved)..
+			" targetState="..tostring(beforeTargetOwner).."/"..tostring(beforeTargetUnits).."->"..tostring(afterTargetOwner).."/"..tostring(afterTargetUnits)..
 			" requirePlotChange="..SC_BoolText(requirePlotChange == true)..
 			" state="..SC_GetUnitOrderDebug(unit))
 	end
@@ -885,69 +909,398 @@ local function SC_GetUnitRole(unit, unitInfo)
 	return "assault"
 end
 
+function SC_GetUnitIntrinsicPromotionSummary(unitInfo)
+	if unitInfo == nil then
+		return {}
+	end
+	local unitType = unitInfo.Type or "UNKNOWN"
+	local cached = SC_UNIT_CAPABILITY_CACHE[unitType]
+	if cached ~= nil and cached.promotionSummary ~= nil then
+		return cached.promotionSummary
+	end
+	local summary = {
+		moveAfterAttack = false,
+		extraAttacks = 0,
+		mustSetUp = false,
+		dropRange = 0,
+		rangeChange = 0,
+		intercept = 0,
+		airSweep = false,
+		indirectFire = (unitInfo.RangeAttackIgnoreLOS or 0) > 0,
+		noCapture = false,
+		onlyDefensive = false,
+		ignoreZOC = false,
+		ignoreTerrain = false,
+		alwaysHeal = false,
+		healOnKill = 0,
+		cityAttack = 0,
+		attack = 0,
+		defense = 0,
+		cargo = 0,
+		carrierAir = false,
+		carrier = false,
+		missileCarrier = false,
+		submarine = false
+	}
+	pcall(function()
+		for freePromotion in GameInfo.Unit_FreePromotions{ UnitType = unitType } do
+			local promotion = GameInfo.UnitPromotions[freePromotion.PromotionType]
+			if promotion ~= nil then
+				local promotionType = promotion.Type or freePromotion.PromotionType or ""
+				summary.moveAfterAttack = summary.moveAfterAttack
+					or (promotion.CanMoveAfterAttacking or 0) > 0
+					or (promotion.Blitz or 0) > 0
+					or (promotion.ExtraAttacks or 0) > 0
+				summary.extraAttacks = summary.extraAttacks + math.max(promotion.ExtraAttacks or 0, 0)
+				summary.mustSetUp = summary.mustSetUp or (promotion.MustSetUpToRangedAttack or 0) > 0
+				summary.dropRange = math.max(summary.dropRange, promotion.DropRange or 0)
+				summary.rangeChange = summary.rangeChange + (promotion.RangeChange or 0)
+				summary.intercept = summary.intercept
+					+ math.max(promotion.InterceptChanceChange or 0, 0)
+					+ math.max(promotion.NumInterceptionChange or 0, 0) * 100
+				summary.airSweep = summary.airSweep or (promotion.AirSweepCapable or 0) > 0
+				summary.indirectFire = summary.indirectFire or (promotion.RangeAttackIgnoreLOS or 0) > 0
+				summary.noCapture = summary.noCapture or (promotion.NoCapture or 0) > 0
+				summary.onlyDefensive = summary.onlyDefensive or (promotion.OnlyDefensive or 0) > 0
+				summary.ignoreZOC = summary.ignoreZOC or (promotion.IgnoreZOC or 0) > 0
+				summary.ignoreTerrain = summary.ignoreTerrain
+					or (promotion.IgnoreTerrainCost or 0) > 0
+					or (promotion.FlatMovementCost or 0) > 0
+				summary.alwaysHeal = summary.alwaysHeal or (promotion.AlwaysHeal or 0) > 0
+				summary.healOnKill = summary.healOnKill + math.max(promotion.HPHealedIfDestroyEnemy or 0, 0)
+				summary.cityAttack = summary.cityAttack + (promotion.CityAttack or 0)
+				summary.attack = summary.attack + (promotion.AttackMod or 0)
+				summary.defense = summary.defense + (promotion.DefenseMod or 0)
+				summary.cargo = summary.cargo + math.max(promotion.CargoChange or 0, 0)
+				summary.carrierAir = summary.carrierAir or SC_TextHas(promotionType, "CARRIER_FIGHTER")
+				summary.carrier = summary.carrier or SC_TextHas(promotionType, "CARRIER_UNIT")
+				summary.missileCarrier = summary.missileCarrier or SC_TextHas(promotionType, "MISSILE_CARRIER")
+				summary.submarine = summary.submarine or SC_TextHas(promotionType, "SUBMARINE_COMBAT")
+			end
+		end
+	end)
+	SC_UNIT_CAPABILITY_CACHE[unitType] = SC_UNIT_CAPABILITY_CACHE[unitType] or {}
+	SC_UNIT_CAPABILITY_CACHE[unitType].promotionSummary = summary
+	return summary
+end
+
+function SC_GetUnitCapabilityProfile(unit, unitInfo, role)
+	unitInfo = unitInfo or SC_GetUnitInfo(unit)
+	if unitInfo == nil then
+		return { doctrineClass = "unknown", phase = 99, canCapture = false, power = 0 }
+	end
+	local unitType = unitInfo.Type or "UNKNOWN"
+	local cached = SC_UNIT_CAPABILITY_CACHE[unitType]
+	if cached ~= nil and cached.profile ~= nil then
+		return cached.profile
+	end
+	role = role or SC_GetUnitRole(unit, unitInfo)
+	local promotions = SC_GetUnitIntrinsicPromotionSummary(unitInfo)
+	local domain = unitInfo.Domain or ""
+	local combatClass = unitInfo.CombatClass or ""
+	local ai = unitInfo.DefaultUnitAI or ""
+	local combat = math.max(unitInfo.Combat or 0, 0)
+	local ranged = math.max(unitInfo.RangedCombat or 0, 0)
+	local range = math.max((unitInfo.Range or 0) + (promotions.rangeChange or 0), 0)
+	local moves = math.max(unitInfo.Moves or 0, 0)
+	local special = unitInfo.Special or ""
+	local specialCargo = unitInfo.SpecialCargo or ""
+	local domainCargo = unitInfo.DomainCargo or ""
+	local doctrineClass = "line_assault"
+	local phase = 4
+	if combat <= 0 and ranged <= 0 and combatClass == "" and domain ~= "DOMAIN_AIR" and domain ~= "DOMAIN_SEA" then
+		if ai == "UNITAI_WORKER" or ai == "UNITAI_ARCHAEOLOGIST" then
+			doctrineClass = "civilian_builder"
+		elseif ai == "UNITAI_SETTLE" then
+			doctrineClass = "civilian_settler"
+		elseif ai == "UNITAI_TRADE_UNIT" then
+			doctrineClass = "civilian_trade"
+		elseif SC_TextHas(ai, "MISSIONARY") or SC_TextHas(ai, "PROPHET") or SC_TextHas(ai, "INQUISITOR") then
+			doctrineClass = "civilian_religious"
+		elseif SC_TextHas(ai, "SPACESHIP") then
+			doctrineClass = "civilian_spaceship"
+		else
+			doctrineClass = "civilian_specialist"
+		end
+		phase = 90
+	elseif domain == "DOMAIN_AIR" then
+		if (unitInfo.NukeDamageLevel or 0) > 0 or special == "SPECIALUNIT_NUKE" or ai == "UNITAI_ICBM" then
+			doctrineClass = "strategic_nuclear"
+			phase = 2
+		elseif (unitInfo.Suicide or 0) > 0 or special == "SPECIALUNIT_MISSILE" or ai == "UNITAI_MISSILE_AIR" then
+			doctrineClass = "missile_strike"
+			phase = 2
+		elseif combatClass == "UNITCOMBAT_FIGHTER" or ai == "UNITAI_DEFENSE_AIR" then
+			if promotions.carrierAir or SC_TextHas(unitType, "CARRIER_FIGHTER") or SC_TextHas(unitType, "HARRIER") then
+				doctrineClass = "carrier_multirole"
+			else
+				doctrineClass = "air_superiority"
+			end
+			phase = 1
+		else
+			doctrineClass = "strike_aircraft"
+			phase = 2
+		end
+	elseif domain == "DOMAIN_SEA" then
+		local isCarrier = combatClass == "UNITCOMBAT_CARRIER"
+			or ai == "UNITAI_CARRIER_SEA"
+			or promotions.carrier
+			or (specialCargo == "SPECIALUNIT_FIGHTER" and domainCargo == "DOMAIN_AIR")
+		local isSubmarine = combatClass == "UNITCOMBAT_SUBMARINE" or promotions.submarine
+		if isCarrier then
+			doctrineClass = "fleet_carrier"
+			phase = 5
+		elseif isSubmarine and (specialCargo == "SPECIALUNIT_NUKE" or SC_TextHas(unitType, "SSBN")) then
+			doctrineClass = "ballistic_submarine"
+			phase = 5
+		elseif isSubmarine then
+			doctrineClass = "attack_submarine"
+			phase = 2
+		elseif ranged >= 300 and range >= 6 then
+			doctrineClass = "arsenal_capital"
+			phase = 3
+		elseif promotions.intercept > 0 or specialCargo == "SPECIALUNIT_MISSILE" or promotions.missileCarrier or role == "missile_carrier" then
+			doctrineClass = "air_defense_screen"
+			phase = 1
+		elseif combatClass == "UNITCOMBAT_NAVALRANGED" or (ranged > 0 and range > 1) then
+			doctrineClass = "surface_fire_support"
+			phase = 3
+		elseif ai == "UNITAI_ESCORT_SEA" or combatClass == "UNITCOMBAT_RECON" then
+			doctrineClass = "escort_screen"
+			phase = 1
+		else
+			doctrineClass = "naval_assault"
+			phase = 4
+		end
+	elseif domain == "DOMAIN_HOVER" then
+		doctrineClass = "static_fortress"
+		phase = 3
+	elseif unitType == "UNIT_MECH" then
+		doctrineClass = "super_heavy"
+		phase = 3
+	elseif promotions.intercept > 0 then
+		doctrineClass = "mobile_air_defense"
+		phase = 1
+	elseif combatClass == "UNITCOMBAT_SIEGE" or ai == "UNITAI_CITY_BOMBARD"
+		or (ranged > 0 and range >= 3) then
+		doctrineClass = "siege_artillery"
+		phase = 3
+	elseif combatClass == "UNITCOMBAT_HELICOPTER" then
+		doctrineClass = "gunship"
+		phase = 2
+	elseif ai == "UNITAI_PARADROP" or (promotions.dropRange or 0) > 0 then
+		doctrineClass = "airborne_raider"
+		phase = 1
+	elseif combatClass == "UNITCOMBAT_RECON" or ai == "UNITAI_EXPLORE" then
+		doctrineClass = "recon_raider"
+		phase = 1
+	elseif combatClass == "UNITCOMBAT_ARMOR" or combatClass == "UNITCOMBAT_MOUNTED" or ai == "UNITAI_FAST_ATTACK" or role == "fast_assault" or (moves >= 5 and combat > 0) then
+		doctrineClass = "mobile_breakthrough"
+		phase = 4
+	elseif ai == "UNITAI_COUNTER" then
+		doctrineClass = "counter_defender"
+		phase = 4
+	elseif ai == "UNITAI_DEFENSE" or promotions.onlyDefensive then
+		doctrineClass = "line_defender"
+		phase = 4
+	elseif ranged > 0 then
+		doctrineClass = "ranged_support"
+		phase = 3
+	end
+	local canCapture = combat > 0
+		and domain ~= "DOMAIN_AIR"
+		and domain ~= "DOMAIN_HOVER"
+		and not promotions.noCapture
+		and not promotions.onlyDefensive
+		and (unitInfo.Suicide or 0) <= 0
+		and doctrineClass ~= "fleet_carrier"
+		and doctrineClass ~= "ballistic_submarine"
+	local profile = {
+		doctrineClass = doctrineClass,
+		phase = phase,
+		domain = domain,
+		combatClass = combatClass,
+		defaultAI = ai,
+		combat = combat,
+		ranged = ranged,
+		range = range,
+		moves = moves,
+		power = math.max(combat, ranged),
+		canRange = ranged > 0 or domain == "DOMAIN_AIR",
+		canCapture = canCapture,
+		moveAfterAttack = promotions.moveAfterAttack,
+		extraAttacks = promotions.extraAttacks,
+		mustSetUp = promotions.mustSetUp,
+		dropRange = promotions.dropRange,
+		intercept = promotions.intercept,
+		airSweep = promotions.airSweep,
+		indirectFire = promotions.indirectFire,
+		ignoreZOC = promotions.ignoreZOC,
+		ignoreTerrain = promotions.ignoreTerrain,
+		alwaysHeal = promotions.alwaysHeal,
+		healOnKill = promotions.healOnKill,
+		cityAttack = promotions.cityAttack,
+		attack = promotions.attack,
+		defense = promotions.defense,
+		cargo = promotions.cargo,
+		noCapture = promotions.noCapture,
+		suicide = (unitInfo.Suicide or 0) > 0,
+		maxHP = math.max(unitInfo.MaxHitPoints or 100, 1)
+	}
+	SC_UNIT_CAPABILITY_CACHE[unitType] = SC_UNIT_CAPABILITY_CACHE[unitType] or {}
+	SC_UNIT_CAPABILITY_CACHE[unitType].profile = profile
+	return profile
+end
+
+function SC_GetUnitDoctrineClass(unit, unitInfo, role)
+	return SC_GetUnitCapabilityProfile(unit, unitInfo, role).doctrineClass
+end
+
+function SC_GetUnitDoctrinePhase(unit, unitInfo, role)
+	return SC_GetUnitCapabilityProfile(unit, unitInfo, role).phase or 99
+end
+
+function SC_GetStrategicMovementPhase(unit, unitInfo, role)
+	local doctrineClass = SC_GetUnitDoctrineClass(unit, unitInfo, role)
+	if doctrineClass == "fleet_carrier" or doctrineClass == "ballistic_submarine" or doctrineClass == "arsenal_capital" then
+		return 1
+	end
+	if SC_IsScreenDoctrineClass ~= nil and SC_IsScreenDoctrineClass(doctrineClass) then
+		return 2
+	end
+	if doctrineClass == "surface_fire_support" or doctrineClass == "siege_artillery" or doctrineClass == "ranged_support" then
+		return 3
+	end
+	if doctrineClass == "civilian_builder" or doctrineClass == "civilian_settler" or doctrineClass == "civilian_trade" or doctrineClass == "civilian_religious" or doctrineClass == "civilian_specialist" then
+		return 90
+	end
+	return 4
+end
+
+function SC_GetDoctrineRosterDebug(player)
+	if player == nil then
+		return "roster=nil"
+	end
+	local counts = {}
+	local total = 0
+	for unit in player:Units() do
+		if unit ~= nil and not unit:IsDead() then
+			local doctrineClass = SC_GetUnitDoctrineClass(unit, SC_GetUnitInfo(unit))
+			counts[doctrineClass] = (counts[doctrineClass] or 0) + 1
+			total = total + 1
+		end
+	end
+	local parts = {}
+	for doctrineClass, count in pairs(counts) do
+		table.insert(parts, tostring(doctrineClass)..":"..tostring(count))
+	end
+	table.sort(parts)
+	return "units="..tostring(total).." classes="..table.concat(parts, ",")
+end
+
+function SC_GetOperationFocusPlot(player, unit, unitInfo, profile)
+	if player == nil then
+		return nil
+	end
+	unitInfo = unitInfo or SC_GetUnitInfo(unit)
+	profile = profile or SC_GetUnitCapabilityProfile(unit, unitInfo)
+	if unitInfo == nil then
+		return nil
+	end
+	local operationDomain = "land"
+	if unitInfo.Domain == "DOMAIN_SEA" then
+		operationDomain = "sea"
+	elseif unitInfo.Domain == "DOMAIN_AIR" then
+		operationDomain = "air"
+	end
+	local cacheKey = tostring(player:GetID()).."|"..operationDomain
+	local cached = SC_OPERATION_FOCUS_THIS_TURN[cacheKey]
+	if cached ~= nil then
+		return cached.plot
+	end
+	local team = Teams[player:GetTeam()]
+	local unitPlot = unit ~= nil and unit:GetPlot() or nil
+	if team == nil then
+		return nil
+	end
+	local bestPlot = nil
+	local bestScore = -999999
+	for otherID, otherPlayer in pairs(Players) do
+		if otherPlayer ~= nil and otherPlayer:IsAlive() and otherPlayer:GetID() ~= player:GetID() and team:IsAtWar(otherPlayer:GetTeam()) then
+			for city in otherPlayer:Cities() do
+				local cityPlot = city:Plot()
+				local domainAllowed = cityPlot ~= nil
+				if operationDomain == "sea" and cityPlot ~= nil then
+					domainAllowed = SC_IsWaterOrCoastalStrategicPlot ~= nil and SC_IsWaterOrCoastalStrategicPlot(cityPlot)
+				end
+				if domainAllowed and cityPlot ~= nil then
+					local distance = 0
+					if unitPlot ~= nil then
+						distance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), cityPlot:GetX(), cityPlot:GetY())
+					end
+					local damage = SC_GetSafeNumber(function() return city:GetDamage() end, 0)
+					local score = 2400 - distance * 14 + damage * 2
+					if SC_GetSafeNumber(function() return city:IsCapital() and 1 or 0 end, 0) > 0 then
+						score = score + 260
+					end
+					if score > bestScore then
+						bestScore = score
+						bestPlot = cityPlot
+					end
+				end
+			end
+		end
+	end
+	SC_OPERATION_FOCUS_THIS_TURN[cacheKey] = { plot = bestPlot, score = bestScore }
+	if bestPlot ~= nil then
+		SC_Debug("operationFocus select domain="..operationDomain.." class="..tostring(profile.doctrineClass).." target="..SC_GetPlotDebug(bestPlot).." score="..tostring(bestScore))
+	end
+	return bestPlot
+end
+
 function SC_GetUnitCombatTag(unit, unitInfo, role)
 	unitInfo = unitInfo or SC_GetUnitInfo(unit)
 	if unitInfo == nil then
 		return "unknown"
 	end
 	role = role or SC_GetUnitRole(unit, unitInfo)
+	local profile = SC_GetUnitCapabilityProfile(unit, unitInfo, role)
+	local doctrineClass = profile.doctrineClass
 	local unitType = unitInfo.Type or ""
-	local domain = unitInfo.Domain or ""
-	local combatClass = unitInfo.CombatClass or ""
-	local ranged = unitInfo.RangedCombat or 0
-	local range = unitInfo.Range or 0
-	local moves = unitInfo.Moves or 0
-	if role == "carrier" then
+	if doctrineClass == "fleet_carrier" then
 		return "fleet_flagship"
 	end
-	if role == "submarine" then
+	if doctrineClass == "ballistic_submarine" then
+		return "strategic_submarine"
+	end
+	if doctrineClass == "attack_submarine" then
 		return "sub_hunter"
 	end
-	if domain == "DOMAIN_SEA" then
-		if SC_TextHas(unitType, "FUTURE_BATTLESHIP")
-			or SC_TextHas(unitType, "ARSENAL")
-			or SC_TextHas(unitType, "PARTICLE_CANNON")
-			or (ranged >= 300 and range >= 6) then
-			return "arsenal_ship"
-		end
-		if SC_TextHas(unitType, "052D")
-			or SC_TextHas(unitType, "DESTROYER")
-			or SC_TextHas(unitType, "KIROV")
-			or SC_TextHas(unitType, "MISSILE_CRUISER")
-			or SC_TextHas(unitType, "BATTLECRUISER")
-			or role == "missile_carrier"
-			or role == "naval_ranged" then
-			return "missile_screen"
-		end
+	if doctrineClass == "arsenal_capital" then
+		return "arsenal_ship"
+	end
+	if doctrineClass == "air_defense_screen" then
+		return "missile_screen"
+	end
+	if doctrineClass == "surface_fire_support" or doctrineClass == "escort_screen" or doctrineClass == "naval_assault" then
 		return "surface_screen"
 	end
-	if domain == "DOMAIN_AIR" then
-		if role == "missile" or role == "nuke" then
-			return "missile_strike"
-		end
-		if role == "carrier_air" or role == "fighter" or role == "bomber" then
-			return "air_wing"
-		end
+	if doctrineClass == "missile_strike" or doctrineClass == "strategic_nuclear" then
+		return "missile_strike"
 	end
-	if unitType == "UNIT_MECH" then
+	if doctrineClass == "air_superiority" or doctrineClass == "carrier_multirole" or doctrineClass == "strike_aircraft" then
+		return "air_wing"
+	end
+	if doctrineClass == "super_heavy" then
 		return "super_heavy"
 	end
-	if role == "siege"
-		or SC_TextHas(unitType, "ROCKET_ARTILLERY")
-		or SC_TextHas(unitType, "CRUSADER_ARTILLERY")
-		or SC_TextHas(unitType, "WEISHI")
-		or (domain == "DOMAIN_LAND" and ranged >= 150 and range >= 3) then
+	if doctrineClass == "siege_artillery" or doctrineClass == "static_fortress" then
 		return "siege_artillery"
 	end
-	if role == "fast_assault"
-		or SC_TextHas(unitType, "MODERN_ARMOR")
-		or SC_TextHas(unitType, "APACHE")
-		or SC_TextHas(unitType, "HELICOPTER")
-		or SC_TextHas(unitType, "MECHANIZED_INFANTRY")
-		or moves >= 5 then
+	if doctrineClass == "mobile_breakthrough" or doctrineClass == "gunship" or (unitType == "UNIT_MECHANIZED_INFANTRY") then
 		return "fast_breakthrough"
 	end
-	if role == "land_ranged" then
+	if doctrineClass == "ranged_support" or doctrineClass == "mobile_air_defense" then
 		return "fire_support"
 	end
 	return "line_assault"
@@ -956,12 +1309,187 @@ end
 function SC_IsProtectedCombatTag(tag)
 	return tag == "fleet_flagship"
 		or tag == "arsenal_ship"
+		or tag == "strategic_submarine"
 end
 
 function SC_IsScreenCombatTag(tag)
 	return tag == "missile_screen"
 		or tag == "surface_screen"
 		or tag == "sub_hunter"
+end
+
+function SC_IsProtectedDoctrineClass(doctrineClass)
+	return doctrineClass == "fleet_carrier"
+		or doctrineClass == "ballistic_submarine"
+		or doctrineClass == "arsenal_capital"
+end
+
+function SC_IsScreenDoctrineClass(doctrineClass)
+	return doctrineClass == "air_defense_screen"
+		or doctrineClass == "escort_screen"
+		or doctrineClass == "attack_submarine"
+		or doctrineClass == "mobile_air_defense"
+end
+
+function SC_GetUnitEffectivePower(unit, unitInfo, profile)
+	unitInfo = unitInfo or SC_GetUnitInfo(unit)
+	profile = profile or SC_GetUnitCapabilityProfile(unit, unitInfo)
+	local power = math.max(profile.power or 0, 1)
+	local damage = SC_GetSafeNumber(function() return unit:GetDamage() end, 0)
+	local maxHP = math.max(profile.maxHP or 100, 1)
+	local healthRatio = math.max(0.15, 1 - damage / maxHP)
+	return power * (0.45 + healthRatio * 0.55)
+end
+
+function SC_CountEnemyCombatPresenceNearPlot(player, targetPlot, radius, maxCount)
+	if player == nil or targetPlot == nil then
+		return 0
+	end
+	radius = radius or SC_GetConfig("OperationEnemyScreenRadius", 4)
+	maxCount = maxCount or 8
+	local playerID = player:GetID()
+	local plotIndex = nil
+	pcall(function() plotIndex = targetPlot:GetPlotIndex() end)
+	local cacheKey = nil
+	if plotIndex ~= nil then
+		cacheKey = tostring(playerID).."|"..tostring(plotIndex).."|"..tostring(radius)
+		if SC_OPERATION_TARGET_CACHE_THIS_TURN[cacheKey] ~= nil then
+			return SC_OPERATION_TARGET_CACHE_THIS_TURN[cacheKey]
+		end
+	end
+	local team = Teams[player:GetTeam()]
+	local count = 0
+	for dx = -radius, radius, 1 do
+		for dy = -radius, radius, 1 do
+			local plot = SC_GetNearbyPlot(targetPlot:GetX(), targetPlot:GetY(), dx, dy, radius)
+			if plot ~= nil and Map.PlotDistance(targetPlot:GetX(), targetPlot:GetY(), plot:GetX(), plot:GetY()) <= radius then
+				local unitCount = SC_GetSafeNumber(function() return plot:GetNumUnits() end, 0)
+				for i = 0, unitCount - 1, 1 do
+					local enemyUnit = nil
+					pcall(function() enemyUnit = plot:GetUnit(i) end)
+					if enemyUnit ~= nil and not enemyUnit:IsDead() then
+						local ownerID = SC_GetSafeNumber(function() return enemyUnit:GetOwner() end, -1)
+						local owner = Players[ownerID]
+						local enemyInfo = SC_GetUnitInfo(enemyUnit)
+						if owner ~= nil and owner:IsAlive() and team ~= nil and team:IsAtWar(owner:GetTeam())
+							and enemyInfo ~= nil and ((enemyInfo.Combat or 0) > 0 or (enemyInfo.RangedCombat or 0) > 0) then
+							count = count + 1
+							if count >= maxCount then
+								if cacheKey ~= nil then
+									SC_OPERATION_TARGET_CACHE_THIS_TURN[cacheKey] = count
+								end
+								return count
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	if cacheKey ~= nil then
+		SC_OPERATION_TARGET_CACHE_THIS_TURN[cacheKey] = count
+	end
+	return count
+end
+
+function SC_GetDoctrineTargetModifier(attacker, attackerInfo, attackerRole, targetUnit, targetInfo, targetRole, reasons)
+	if attackerInfo == nil or targetInfo == nil then
+		return 0
+	end
+	local attackerProfile = SC_GetUnitCapabilityProfile(attacker, attackerInfo, attackerRole)
+	local targetProfile = SC_GetUnitCapabilityProfile(targetUnit, targetInfo, targetRole)
+	local attackerClass = attackerProfile.doctrineClass
+	local targetClass = targetProfile.doctrineClass
+	local score = 0
+	local attackerPower = SC_GetUnitEffectivePower(attacker, attackerInfo, attackerProfile)
+	local targetPower = SC_GetUnitEffectivePower(targetUnit, targetInfo, targetProfile)
+	local powerRatio = attackerPower / math.max(targetPower, 1)
+	if powerRatio >= 2.5 then
+		score = score + 360
+		SC_AddScoreReason(reasons, "overmatch", 360)
+	elseif powerRatio >= 1.6 then
+		score = score + 220
+		SC_AddScoreReason(reasons, "powerEdge", 220)
+	elseif powerRatio < 0.72 and not attackerProfile.canRange then
+		score = score - 900
+		SC_AddScoreReason(reasons, "badMatchup", -900)
+	elseif powerRatio < 0.95 and not attackerProfile.canRange then
+		score = score - 320
+		SC_AddScoreReason(reasons, "riskyMelee", -320)
+	end
+	if targetProfile.ranged > 0 or targetClass == "siege_artillery" or targetClass == "strike_aircraft" then
+		score = score + 180
+		SC_AddScoreReason(reasons, "removeFirepower", 180)
+	end
+	if targetClass == "fleet_carrier" or targetClass == "ballistic_submarine" or targetClass == "arsenal_capital" then
+		score = score + 420
+		SC_AddScoreReason(reasons, "strategicAsset", 420)
+	end
+	if attackerClass == "air_superiority" or attackerClass == "carrier_multirole" then
+		if targetClass == "strike_aircraft" or targetClass == "air_superiority" or targetClass == "carrier_multirole" then
+			score = score + 620
+			SC_AddScoreReason(reasons, "airControl", 620)
+		elseif targetClass == "mobile_air_defense" or targetClass == "air_defense_screen" then
+			score = score + 360
+			SC_AddScoreReason(reasons, "suppressAA", 360)
+		elseif targetInfo.Domain == "DOMAIN_SEA" then
+			score = score + 260
+			SC_AddScoreReason(reasons, "fleetStrike", 260)
+		end
+	elseif attackerClass == "strike_aircraft" or attackerClass == "missile_strike" then
+		if targetClass == "mobile_air_defense" or targetClass == "air_defense_screen" then
+			score = score + 520
+			SC_AddScoreReason(reasons, "openAirCorridor", 520)
+		elseif targetClass == "siege_artillery" or targetClass == "surface_fire_support" then
+			score = score + 360
+			SC_AddScoreReason(reasons, "deepStrike", 360)
+		end
+	elseif attackerClass == "attack_submarine" then
+		if targetClass == "fleet_carrier" then
+			score = score + 900
+			SC_AddScoreReason(reasons, "carrierKill", 900)
+		elseif targetClass == "ballistic_submarine" or targetClass == "arsenal_capital" then
+			score = score + 700
+			SC_AddScoreReason(reasons, "capitalKill", 700)
+		elseif targetInfo.Domain == "DOMAIN_SEA" then
+			score = score + 420
+			SC_AddScoreReason(reasons, "seaDenial", 420)
+		else
+			score = score - 420
+			SC_AddScoreReason(reasons, "subLandWaste", -420)
+		end
+	elseif attackerClass == "air_defense_screen" or attackerClass == "mobile_air_defense" then
+		if targetInfo.Domain == "DOMAIN_AIR" or targetClass == "missile_strike" then
+			score = score + 760
+			SC_AddScoreReason(reasons, "airDefense", 760)
+		elseif targetInfo.Domain == "DOMAIN_SEA" and attackerClass == "air_defense_screen" then
+			score = score + 240
+			SC_AddScoreReason(reasons, "screenFight", 240)
+		end
+	elseif attackerClass == "mobile_breakthrough" or attackerClass == "gunship" or attackerClass == "super_heavy" then
+		if targetClass == "siege_artillery" or targetClass == "ranged_support" or targetClass == "mobile_air_defense" then
+			score = score + 460
+			SC_AddScoreReason(reasons, "breakthroughTarget", 460)
+		elseif targetClass == "line_defender" or targetClass == "counter_defender" then
+			score = score - 120
+			SC_AddScoreReason(reasons, "screenedTarget", -120)
+		end
+	elseif attackerClass == "counter_defender" then
+		if targetClass == "mobile_breakthrough" or targetClass == "gunship" then
+			score = score + 520
+			SC_AddScoreReason(reasons, "counterMobile", 520)
+		end
+	elseif attackerClass == "siege_artillery" or attackerClass == "surface_fire_support" or attackerClass == "arsenal_capital" then
+		if targetClass == "line_defender" or targetClass == "counter_defender" or targetClass == "surface_fire_support" then
+			score = score + 260
+			SC_AddScoreReason(reasons, "fireSupportTarget", 260)
+		end
+	end
+	if attackerProfile.suicide and targetPower < attackerPower * 0.35 then
+		score = score - 700
+		SC_AddScoreReason(reasons, "munitionWaste", -700)
+	end
+	return score
 end
 
 function SC_CountFriendlyProtectedAssetsNearPlot(player, targetPlot, radius, maxCount)
@@ -1066,12 +1594,24 @@ function SC_GetUnitAuditSnapshot(unit)
 		return nil
 	end
 	local unitInfo = SC_GetUnitInfo(unit)
+	local unitRole = SC_GetUnitRole(unit, unitInfo)
+	local capability = SC_GetUnitCapabilityProfile(unit, unitInfo, unitRole)
 	local plot = nil
 	pcall(function() plot = unit:GetPlot() end)
 	local snapshot = {
 		key = SC_GetUnitTurnKey(unit),
 		label = SC_GetUnitDebugLabel(unit),
-		role = SC_GetUnitRole(unit, unitInfo),
+		role = unitRole,
+		doctrineClass = capability.doctrineClass,
+		phase = capability.phase,
+		power = capability.power,
+		range = capability.range,
+		intercept = capability.intercept,
+		canCapture = capability.canCapture,
+		moveAfterAttack = capability.moveAfterAttack,
+		extraAttacks = capability.extraAttacks,
+		mustSetUp = capability.mustSetUp,
+		dropRange = capability.dropRange,
 		unitType = unitInfo ~= nil and unitInfo.Type or "UNIT?",
 		domain = unitInfo ~= nil and unitInfo.Domain or "?",
 		combatClass = unitInfo ~= nil and unitInfo.CombatClass or "?",
@@ -1125,9 +1665,19 @@ function SC_FormatUnitAuditSnapshot(snapshot)
 	end
 	return "unit="..tostring(snapshot.label)..
 		" role="..tostring(snapshot.role)..
+		" class="..tostring(snapshot.doctrineClass)..
+		" phase="..tostring(snapshot.phase)..
 		" type="..tostring(snapshot.unitType)..
 		" domain="..tostring(snapshot.domain)..
 		" ai="..tostring(snapshot.ai)..
+		" power="..tostring(snapshot.power)..
+		" range="..tostring(snapshot.range)..
+		" intercept="..tostring(snapshot.intercept)..
+		" canCapture="..SC_BoolText(snapshot.canCapture == true)..
+		" moveAfterAttack="..SC_BoolText(snapshot.moveAfterAttack == true)..
+		" extraAttacks="..tostring(snapshot.extraAttacks)..
+		" mustSetUp="..SC_BoolText(snapshot.mustSetUp == true)..
+		" dropRange="..tostring(snapshot.dropRange)..
 		" plot="..tostring(snapshot.plot)..
 		" moves="..tostring(snapshot.moves)..
 		" damage="..tostring(snapshot.damage)..
@@ -1434,6 +1984,49 @@ function SC_GetTacticalActionCount(unitKey)
 	return tonumber(value) or 0
 end
 
+function SC_GetStrategicOrderCount(unitKey)
+	if unitKey == nil then
+		return 0
+	end
+	local value = SC_STRATEGIC_ORDERED_THIS_TURN[unitKey]
+	if value == true then
+		return 1
+	end
+	return tonumber(value) or 0
+end
+
+function SC_RecordStrategicOrder(unitKey)
+	if unitKey == nil then
+		return 0
+	end
+	local count = SC_GetStrategicOrderCount(unitKey) + 1
+	SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = count
+	return count
+end
+
+function SC_GetStrategicOrderCapForUnit(unit, unitInfo, role)
+	local profile = SC_GetUnitCapabilityProfile(unit, unitInfo, role)
+	local cap = 1
+	if profile.moveAfterAttack then
+		cap = cap + 1
+	end
+	cap = cap + math.min(profile.extraAttacks or 0, 2)
+	if profile.doctrineClass == "super_heavy" then
+		cap = math.max(cap, 4)
+	end
+	return math.min(cap, SC_GetConfig("MaxStrategicOrdersPerUnitPerTurn", 4))
+end
+
+function SC_MarkStrategicUnitDone(unit)
+	local unitKey = SC_GetUnitTurnKey(unit)
+	if unitKey == nil then
+		return
+	end
+	local unitInfo = SC_GetUnitInfo(unit)
+	local role = SC_GetUnitRole(unit, unitInfo)
+	SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = SC_GetStrategicOrderCapForUnit(unit, unitInfo, role)
+end
+
 function SC_RecordTacticalAction(unitKey)
 	if unitKey == nil then
 		return 0
@@ -1445,19 +2038,21 @@ end
 
 function SC_GetTacticalActionCapForUnit(unit, unitInfo, role)
 	local defaultCap = SC_GetConfig("MaxTacticalActionsPerUnitPerTurn", 2)
+	local profile = SC_GetUnitCapabilityProfile(unit, unitInfo, role)
+	local cap = defaultCap
 	if role == "carrier_air" or role == "fighter" or role == "bomber" then
-		return SC_GetConfig("MaxAirTacticalActionsPerUnitPerTurn", 5)
+		cap = SC_GetConfig("MaxAirTacticalActionsPerUnitPerTurn", 5)
+	elseif role == "missile" then
+		cap = SC_GetConfig("MaxMissileTacticalActionsPerUnitPerTurn", 2)
+	elseif role == "missile_carrier" or role == "naval_ranged" or role == "submarine" then
+		cap = SC_GetConfig("MaxNavalTacticalActionsPerUnitPerTurn", 4)
+	elseif role == "siege" or role == "land_ranged" then
+		cap = SC_GetConfig("MaxLandRangedTacticalActionsPerUnitPerTurn", 3)
 	end
-	if role == "missile" then
-		return SC_GetConfig("MaxMissileTacticalActionsPerUnitPerTurn", 2)
+	if profile.moveAfterAttack or (profile.extraAttacks or 0) > 0 then
+		cap = math.max(cap, math.min(1 + (profile.extraAttacks or 0), SC_GetConfig("MaxMultiAttackTacticalActions", 6)))
 	end
-	if role == "missile_carrier" or role == "naval_ranged" or role == "submarine" then
-		return SC_GetConfig("MaxNavalTacticalActionsPerUnitPerTurn", 4)
-	end
-	if role == "siege" or role == "land_ranged" then
-		return SC_GetConfig("MaxLandRangedTacticalActionsPerUnitPerTurn", 3)
-	end
-	return defaultCap
+	return cap
 end
 
 function SC_GetUnitPlotIndexForTacticalCache(unit)
@@ -1694,6 +2289,8 @@ local function SC_GetBestTrainableUnit(city, preferSea, preferAir, reservedOrder
 						candidateCount = candidateCount + 1
 						local role = SC_GetUnitRole(nil, unitInfo)
 						local tag = SC_GetUnitCombatTag(nil, unitInfo, role)
+						local capability = SC_GetUnitCapabilityProfile(nil, unitInfo, role)
+						local doctrineClass = capability.doctrineClass
 						local unitType = unitInfo.Type or ""
 						local unitEraRank = SC_GetUnitEraRank(unitInfo)
 						local power = SC_GetUnitPowerScore(unitInfo)
@@ -1717,6 +2314,15 @@ local function SC_GetBestTrainableUnit(city, preferSea, preferAir, reservedOrder
 							elseif tag == "air_wing" or tag == "missile_strike" then
 								score = score + 220
 							end
+							if doctrineClass == "ballistic_submarine" then
+								score = score + 180
+							elseif doctrineClass == "attack_submarine" then
+								score = score + 240
+							elseif doctrineClass == "air_defense_screen" or doctrineClass == "escort_screen" then
+								score = score + 300
+							elseif doctrineClass == "carrier_multirole" or doctrineClass == "air_superiority" then
+								score = score + 260
+							end
 							if SC_TextHas(unitType, "052D") or SC_TextHas(unitType, "KIROV") or SC_TextHas(unitType, "MISSILE_CRUISER") then
 								score = score + 170
 							end
@@ -1732,6 +2338,13 @@ local function SC_GetBestTrainableUnit(city, preferSea, preferAir, reservedOrder
 								score = score + 170
 							elseif tag == "line_assault" or tag == "super_heavy" then
 								score = score + 110
+							end
+							if doctrineClass == "mobile_air_defense" or doctrineClass == "counter_defender" then
+								score = score + 180
+							elseif doctrineClass == "airborne_raider" or doctrineClass == "gunship" then
+								score = score + 220
+							elseif doctrineClass == "siege_artillery" then
+								score = score + 160
 							end
 							if SC_TextHas(unitType, "MODERN_ARMOR") or SC_TextHas(unitType, "APACHE") or SC_TextHas(unitType, "ROCKET_ARTILLERY") or SC_TextHas(unitType, "CRUSADER_ARTILLERY") then
 								score = score + 140
@@ -1851,12 +2464,44 @@ local function SC_CanRangeStrikeAt(unit, plot)
 	return ok and result
 end
 
-local function SC_RangeStrike(unit, plot)
+local function SC_IsPotentialRangeStrikeAt(unit, plot)
+	if SC_CanRangeStrikeAt(unit, plot) then
+		return true
+	end
 	if unit == nil or plot == nil then
 		return false
 	end
 	local unitInfo = SC_GetUnitInfo(unit)
+	local profile = SC_GetUnitCapabilityProfile(unit, unitInfo)
+	if not profile.mustSetUp then
+		return false
+	end
+	local unitPlot = unit:GetPlot()
+	if unitPlot == nil then
+		return false
+	end
+	local distance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), plot:GetX(), plot:GetY())
+	return distance <= SC_GetUnitRangeValue(unit, unitInfo)
+end
+
+local function SC_RangeStrike(unit, plot)
+	if unit == nil or plot == nil then
+		return false
+	end
+	if SC_IsCombatTargetAuthorized ~= nil and not SC_IsCombatTargetAuthorized(unit, plot) then
+		SC_Debug("rangeStrike diplomacy-block unit="..SC_GetUnitDebugLabel(unit).." target="..SC_GetPlotDebug(plot))
+		return false, "diplomacy-block"
+	end
+	local unitInfo = SC_GetUnitInfo(unit)
 	local role = SC_GetUnitRole(unit, unitInfo)
+	local profile = SC_GetUnitCapabilityProfile(unit, unitInfo, role)
+	if profile.mustSetUp and not SC_CanRangeStrikeAt(unit, plot) then
+		local setupMission = SC_GetMissionID("MISSION_SET_UP_FOR_RANGED_ATTACK")
+		if setupMission ~= nil and SC_SendUnitMission(unit, setupMission) then
+			SC_Debug("rangeStrike setup unit="..SC_GetUnitDebugLabel(unit).." class="..tostring(profile.doctrineClass).." target="..SC_GetPlotDebug(plot))
+			return true, "setup"
+		end
+	end
 	local isAirAttack = unitInfo ~= nil and unitInfo.Domain == "DOMAIN_AIR"
 	local moveMission = SC_GetMissionID("MISSION_MOVE_TO")
 	local rangeMission = SC_GetMissionID("MISSION_RANGE_ATTACK")
@@ -2036,24 +2681,11 @@ function SC_IsAssaultCaptureRole(role)
 end
 
 function SC_CanActAsCityCaptureUnit(unit, unitInfo, role)
-	if SC_IsAssaultCaptureRole(role) then
-		return true
-	end
 	unitInfo = unitInfo or SC_GetUnitInfo(unit)
-	if unitInfo == nil or unitInfo.Domain ~= "DOMAIN_SEA" then
+	if unitInfo == nil then
 		return false
 	end
-	if role ~= "missile_carrier" and role ~= "naval_ranged" then
-		return false
-	end
-	local unitType = unitInfo.Type or ""
-	return SC_TextHas(unitType, "052D")
-		or SC_TextHas(unitType, "DESTROYER")
-		or SC_TextHas(unitType, "KIROV")
-		or SC_TextHas(unitType, "CRUISER")
-		or SC_TextHas(unitType, "BATTLECRUISER")
-		or SC_TextHas(unitType, "BATTLESHIP")
-		or SC_TextHas(unitType, "DREADNOUGHT")
+	return SC_GetUnitCapabilityProfile(unit, unitInfo, role).canCapture == true
 end
 
 function SC_IsRangedSupportRole(role)
@@ -2222,11 +2854,23 @@ local function SC_ScoreRangeTarget(player, unit, role, unitPlot, targetPlot, ene
 	local coastalTarget = SC_IsCoastalAssaultPlot(targetPlot)
 	local unitInfo = SC_GetUnitInfo(unit)
 	local unitTag = SC_GetUnitCombatTag(unit, unitInfo, role)
+	local unitProfile = SC_GetUnitCapabilityProfile(unit, unitInfo, role)
+	local focusPlot = SC_GetOperationFocusPlot(player, unit, unitInfo, unitProfile)
+	if focusPlot ~= nil then
+		local focusDistance = Map.PlotDistance(targetPlot:GetX(), targetPlot:GetY(), focusPlot:GetX(), focusPlot:GetY())
+		if focusDistance <= SC_GetConfig("OperationFocusRadius", 5) then
+			local focusScore = 520 - focusDistance * 70
+			score = score + focusScore
+			SC_AddScoreReason(reasons, "operationFocus", focusScore)
+		end
+	end
 	local supportCount = 0
 	local captureCount = 0
 	if enemyUnit ~= nil then
 		local enemyInfo = SC_GetUnitInfo(enemyUnit)
 		local enemyRole = SC_GetUnitRole(enemyUnit, enemyInfo)
+		local doctrineScore = SC_GetDoctrineTargetModifier(unit, unitInfo, role, enemyUnit, enemyInfo, enemyRole, reasons)
+		score = score + doctrineScore
 		local protectedThreatScore = SC_GetProtectedAssetThreatScore(player, targetPlot, enemyUnit, enemyInfo, enemyRole, role, unitTag, reasons)
 		score = score + protectedThreatScore
 		local enemyDamage = SC_GetSafeNumber(function() return enemyUnit:GetDamage() end, 0)
@@ -2301,11 +2945,21 @@ local function SC_ScoreRangeTarget(player, unit, role, unitPlot, targetPlot, ene
 	end
 	if enemyCity ~= nil then
 		local cityDamage, cityMaxHP, cityDamageRatio = SC_GetCityDamageInfo(enemyCity)
+		local doctrineClass = SC_GetUnitDoctrineClass(unit, unitInfo, role)
+		local enemyScreen = SC_CountEnemyCombatPresenceNearPlot(player, targetPlot, SC_GetConfig("OperationEnemyScreenRadius", 4), 6)
 		local cityStrikeCount = SC_GetRangeTargetStrikeCount(targetPlot, "city", "all")
 		local roleStrikeBucket = SC_GetRangeRoleStrikeBucket(role)
 		local roleStrikeCount = SC_GetRangeTargetStrikeCount(targetPlot, "city", roleStrikeBucket)
 		score = score + 700
 		SC_AddScoreReason(reasons, "city", 700)
+		if enemyScreen > 0 and cityDamageRatio < SC_GetConfig("CityCaptureReadyDamageRatio", 0.72) then
+			local screenPenalty = math.min(enemyScreen, 4) * 260
+			if doctrineClass == "siege_artillery" or doctrineClass == "arsenal_capital" then
+				screenPenalty = math.floor(screenPenalty * 0.45)
+			end
+			score = score - screenPenalty
+			SC_AddScoreReason(reasons, "clearUnitsFirst", -screenPenalty)
+		end
 		local cityDamageScore = cityDamage * 4
 		score = score + cityDamageScore
 		SC_AddScoreReason(reasons, "cityDamage", cityDamageScore)
@@ -2448,7 +3102,7 @@ local function SC_FindRangeTarget(player, unit)
 				local plot = enemyUnit:GetPlot()
 				if plot == nil then
 					stats.noPlot = stats.noPlot + 1
-				elseif SC_CanRangeStrikeAt(unit, plot) then
+				elseif SC_IsPotentialRangeStrikeAt(unit, plot) then
 					stats.inRangeUnits = stats.inRangeUnits + 1
 					local score, reason = SC_ScoreRangeTarget(player, unit, role, unitPlot, plot, enemyUnit, nil)
 					if score > bestScore then
@@ -2467,7 +3121,7 @@ local function SC_FindRangeTarget(player, unit)
 				local plot = city:Plot()
 				if plot == nil then
 					stats.noPlot = stats.noPlot + 1
-				elseif SC_CanRangeStrikeAt(unit, plot) then
+				elseif SC_IsPotentialRangeStrikeAt(unit, plot) then
 					stats.inRangeCities = stats.inRangeCities + 1
 					local score, reason = SC_ScoreRangeTarget(player, unit, role, unitPlot, plot, nil, city)
 					if score > bestScore then
@@ -2486,6 +3140,90 @@ local function SC_FindRangeTarget(player, unit)
 	return bestPlot, bestScore, stats
 end
 
+function SC_FindAirSweepTarget(player, unit)
+	if player == nil or unit == nil then
+		return nil, -999999, "missing"
+	end
+	local unitInfo = SC_GetUnitInfo(unit)
+	local role = SC_GetUnitRole(unit, unitInfo)
+	local profile = SC_GetUnitCapabilityProfile(unit, unitInfo, role)
+	if not profile.airSweep and profile.doctrineClass ~= "air_superiority" and profile.doctrineClass ~= "carrier_multirole" then
+		return nil, -999999, "not-sweep-capable"
+	end
+	local unitPlot = unit:GetPlot()
+	local team = Teams[player:GetTeam()]
+	if unitPlot == nil or team == nil then
+		return nil, -999999, "no-plot"
+	end
+	local bestPlot = nil
+	local bestScore = -999999
+	local bestReason = "no-enemy-air"
+	for otherID, otherPlayer in pairs(Players) do
+		if otherPlayer ~= nil and otherPlayer:IsAlive() and otherPlayer:GetID() ~= player:GetID() and team:IsAtWar(otherPlayer:GetTeam()) then
+			for enemyUnit in otherPlayer:Units() do
+				local enemyInfo = SC_GetUnitInfo(enemyUnit)
+				local enemyPlot = enemyUnit ~= nil and enemyUnit:GetPlot() or nil
+				if enemyPlot ~= nil and enemyInfo ~= nil and enemyInfo.Domain == "DOMAIN_AIR" then
+					local distance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), enemyPlot:GetX(), enemyPlot:GetY())
+					if distance <= math.max(profile.range or 0, 1) and SC_IsCombatTargetAuthorized(unit, enemyPlot) then
+						local enemyProfile = SC_GetUnitCapabilityProfile(enemyUnit, enemyInfo)
+						local score = 1800 - distance * 12 + (enemyProfile.power or 0) * 3 + (enemyProfile.intercept or 0) * 2
+						local candidateReason = "enemy-air"
+						if enemyProfile.doctrineClass == "air_superiority" or enemyProfile.doctrineClass == "carrier_multirole" then
+							score = score + 520
+							candidateReason = "enemy-fighter"
+						elseif enemyProfile.doctrineClass == "strike_aircraft" then
+							score = score + 360
+							candidateReason = "enemy-strike-air"
+						end
+						if score > bestScore then
+							bestScore = score
+							bestPlot = enemyPlot
+							bestReason = candidateReason
+						end
+					end
+				end
+			end
+		end
+	end
+	return bestPlot, bestScore, bestReason
+end
+
+local function SC_AutomateAirSuperiority(player, atWar)
+	if player == nil or not atWar then
+		return 0
+	end
+	local actions = 0
+	for unit in player:Units() do
+		if unit ~= nil and not unit:IsDead() and SC_CanUnitActForTactical(unit, SC_GetUnitInfo(unit)) then
+			local unitInfo = SC_GetUnitInfo(unit)
+			local role = SC_GetUnitRole(unit, unitInfo)
+			local profile = SC_GetUnitCapabilityProfile(unit, unitInfo, role)
+			local unitKey = SC_GetUnitTurnKey(unit)
+			local actionCap = SC_GetTacticalActionCapForUnit(unit, unitInfo, role)
+			if (profile.doctrineClass == "air_superiority" or profile.doctrineClass == "carrier_multirole")
+				and SC_GetTacticalActionCount(unitKey) < actionCap then
+				local targetPlot, targetScore, reason = SC_FindAirSweepTarget(player, unit)
+				if targetPlot ~= nil then
+					local mission = SC_GetMissionID("MISSION_AIR_SWEEP")
+					local ok = mission ~= nil and SC_SendUnitMission(unit, mission, targetPlot:GetX(), targetPlot:GetY())
+					if not ok and mission ~= nil and SC_TryDirectTargetedMission ~= nil then
+						ok = SC_TryDirectTargetedMission(unit, mission, targetPlot, "air-superiority")
+					end
+					if ok then
+						local count = SC_RecordTacticalAction(unitKey)
+						actions = actions + 1
+						SC_Debug("airSuperiority sweep unit="..SC_GetUnitDebugLabel(unit).." class="..tostring(profile.doctrineClass).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore).." reason="..tostring(reason).." count="..tostring(count).."/"..tostring(actionCap))
+					else
+						SC_Debug("airSuperiority failed unit="..SC_GetUnitDebugLabel(unit).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore).." reason="..tostring(reason))
+					end
+				end
+			end
+		end
+	end
+	return actions
+end
+
 local function SC_AutomateLocalDefense(player, atWar)
 	if not SC_GetConfig("AutoLocalDefense", true) or not atWar then
 		SC_Debug("localDefense skip enabled="..SC_BoolText(SC_GetConfig("AutoLocalDefense", true)).." atWar="..SC_BoolText(atWar))
@@ -2502,10 +3240,29 @@ local function SC_AutomateLocalDefense(player, atWar)
 			SC_Debug(text)
 		end
 	end
+	local orderedUnits = {}
+	for unit in player:Units() do
+		if unit ~= nil then
+			table.insert(orderedUnits, unit)
+		end
+	end
+	table.sort(orderedUnits, function(a, b)
+		local aInfo = SC_GetUnitInfo(a)
+		local bInfo = SC_GetUnitInfo(b)
+		local aProfile = SC_GetUnitCapabilityProfile(a, aInfo)
+		local bProfile = SC_GetUnitCapabilityProfile(b, bInfo)
+		if (aProfile.phase or 99) ~= (bProfile.phase or 99) then
+			return (aProfile.phase or 99) < (bProfile.phase or 99)
+		end
+		if (aProfile.range or 0) ~= (bProfile.range or 0) then
+			return (aProfile.range or 0) > (bProfile.range or 0)
+		end
+		return (aProfile.power or 0) > (bProfile.power or 0)
+	end)
 	SC_Debug("localDefense start maxActions="..tostring(maxActions).." maxRounds="..tostring(maxRounds))
 	for round = 1, maxRounds, 1 do
 		local roundActions = 0
-		for unit in player:Units() do
+		for _, unit in ipairs(orderedUnits) do
 			if actions >= maxActions then
 				SC_Debug("localDefense cap actions="..tostring(actions))
 				return actions
@@ -2514,6 +3271,7 @@ local function SC_AutomateLocalDefense(player, atWar)
 				local unitInfo = SC_GetUnitInfo(unit)
 				local role = SC_GetUnitRole(unit, unitInfo)
 				local unitTag = SC_GetUnitCombatTag(unit, unitInfo, role)
+				local doctrineClass = SC_GetUnitDoctrineClass(unit, unitInfo, role)
 				local unitKey = SC_GetUnitTurnKey(unit)
 				if SC_IsCombatAutomationUnit(unit, unitInfo) and unit:GetDamage() < SC_GetConfig("HealDamageThreshold", 45) then
 					local canAct = SC_CanUnitActForTactical(unit, unitInfo)
@@ -2543,7 +3301,7 @@ local function SC_AutomateLocalDefense(player, atWar)
 								if SC_IsStrikeStatusFired(strikeStatus) then
 									label = "fired"
 								end
-								debugUnit("localDefense "..label.." round="..tostring(round).." unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." tag="..tostring(unitTag).." status="..tostring(strikeStatus).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore).." reason="..tostring(targetStats and targetStats.bestReason or "nil"))
+								debugUnit("localDefense "..label.." round="..tostring(round).." unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." class="..tostring(doctrineClass).." tag="..tostring(unitTag).." status="..tostring(strikeStatus).." count="..tostring(newCount).."/"..tostring(actionCap).." target="..SC_GetPlotDebug(targetPlot).." score="..tostring(targetScore).." reason="..tostring(targetStats and targetStats.bestReason or "nil"))
 								if unitKey ~= nil then
 									SC_TACTICAL_ORDERED_THIS_TURN[unitKey] = newCount
 									if SC_IsStrikeStatusQueued(strikeStatus) then
@@ -2671,6 +3429,92 @@ local function SC_AutomateUnitUpgrades(player)
 	return upgraded
 end
 
+function SC_GetNearestEnemyCombatDistance(player, targetPlot, maxDistance)
+	if player == nil or targetPlot == nil then
+		return 999
+	end
+	maxDistance = maxDistance or 12
+	local plotIndex = nil
+	pcall(function() plotIndex = targetPlot:GetPlotIndex() end)
+	local cacheKey = plotIndex ~= nil and tostring(player:GetID()).."|"..tostring(plotIndex).."|"..tostring(maxDistance) or nil
+	if cacheKey ~= nil and SC_RETREAT_THREAT_CACHE_THIS_TURN[cacheKey] ~= nil then
+		return SC_RETREAT_THREAT_CACHE_THIS_TURN[cacheKey]
+	end
+	local team = Teams[player:GetTeam()]
+	if team == nil then
+		return 999
+	end
+	local bestDistance = maxDistance
+	local found = false
+	for otherID, otherPlayer in pairs(Players) do
+		if otherPlayer ~= nil and otherPlayer:IsAlive() and otherPlayer:GetID() ~= player:GetID() and team:IsAtWar(otherPlayer:GetTeam()) then
+			for enemyUnit in otherPlayer:Units() do
+				local enemyInfo = SC_GetUnitInfo(enemyUnit)
+				local enemyPlot = enemyUnit ~= nil and enemyUnit:GetPlot() or nil
+				if enemyPlot ~= nil and enemyInfo ~= nil and ((enemyInfo.Combat or 0) > 0 or (enemyInfo.RangedCombat or 0) > 0) then
+					local distance = Map.PlotDistance(targetPlot:GetX(), targetPlot:GetY(), enemyPlot:GetX(), enemyPlot:GetY())
+					if distance < bestDistance then
+						bestDistance = distance
+						found = true
+					end
+				end
+			end
+		end
+	end
+	if not found then
+		if cacheKey ~= nil then
+			SC_RETREAT_THREAT_CACHE_THIS_TURN[cacheKey] = 999
+		end
+		return 999
+	end
+	if cacheKey ~= nil then
+		SC_RETREAT_THREAT_CACHE_THIS_TURN[cacheKey] = bestDistance
+	end
+	return bestDistance
+end
+
+function SC_FindRetreatPlot(player, unit)
+	if player == nil or unit == nil then
+		return nil
+	end
+	local sourcePlot = unit:GetPlot()
+	local unitInfo = SC_GetUnitInfo(unit)
+	if sourcePlot == nil or unitInfo == nil then
+		return nil
+	end
+	local radius = SC_GetConfig("RetreatSearchRadius", 4)
+	local layer = SC_GetUnitStackLayer(unit)
+	local bestPlot = nil
+	local bestScore = -999999
+	for dx = -radius, radius, 1 do
+		for dy = -radius, radius, 1 do
+			local plot = SC_GetNearbyPlot(sourcePlot:GetX(), sourcePlot:GetY(), dx, dy, radius)
+			local usable, moveDistance = SC_MoveCandidateIsUsable(player, unit, unitInfo, sourcePlot, plot, layer, nil, nil, nil)
+			if usable and moveDistance ~= nil and moveDistance <= radius then
+				local checked, canEnter = pcall(function() return unit:CanMoveInto(plot, 0) end)
+				if checked and canEnter then
+					local enemyDistance = SC_GetNearestEnemyCombatDistance(player, plot, 12)
+					local score = enemyDistance * 150 - moveDistance * 15
+					local owner = SC_GetSafeNumber(function() return plot:GetOwner() end, -1)
+					if owner == player:GetID() then
+						score = score + 520
+					elseif owner < 0 then
+						score = score + 100
+					end
+					if unitInfo.Domain == "DOMAIN_SEA" then
+						score = score - SC_CountEnemySeaThreatsNearPlot(player, plot, SC_GetConfig("FleetStandoffThreatRadius", 4)) * 260
+					end
+					if score > bestScore then
+						bestScore = score
+						bestPlot = plot
+					end
+				end
+			end
+		end
+	end
+	return bestPlot
+end
+
 local function SC_AutomateDamagedUnitHealing(player)
 	if not SC_GetConfig("AutoHealDamagedUnits", false) or player == nil then
 		return 0
@@ -2682,17 +3526,44 @@ local function SC_AutomateDamagedUnitHealing(player)
 		if healed >= maxHeals then
 			return healed
 		end
-		if unit ~= nil and unit:IsCombatUnit() and unit:CanMove() and unit:GetDamage() >= threshold then
+		if unit ~= nil and unit:IsCombatUnit() and unit:CanMove() then
+			local unitInfo = SC_GetUnitInfo(unit)
+			local role = SC_GetUnitRole(unit, unitInfo)
+			local profile = SC_GetUnitCapabilityProfile(unit, unitInfo, role)
+			local unitThreshold = threshold
+			if SC_IsProtectedDoctrineClass(profile.doctrineClass) then
+				unitThreshold = math.min(unitThreshold, SC_GetConfig("ProtectedAssetRetreatDamage", 20))
+			end
+			if unit:GetDamage() >= unitThreshold then
 			local unitKey = SC_GetUnitTurnKey(unit)
 			if unitKey ~= nil and SC_HEAL_FAILED_THIS_TURN[unitKey] then
 				if SC_GetConfig("DebugUnitCommands", true) then
 					SC_Debug("heal cached-skip unit="..SC_GetUnitDebugLabel(unit).." state="..SC_GetUnitOrderDebug(unit))
 				end
 			else
-				local ok = SC_SendUnitMission(unit, GameInfoTypes.MISSION_HEAL)
+				local unitPlot = unit:GetPlot()
+				local enemyDistance = SC_GetNearestEnemyCombatDistance(player, unitPlot, SC_GetConfig("RetreatThreatRadius", 5) + 1)
+				local retreated = false
+				if enemyDistance <= SC_GetConfig("RetreatThreatRadius", 5) then
+					local retreatPlot = SC_FindRetreatPlot(player, unit)
+					if retreatPlot ~= nil then
+						retreated = SC_TryMoveMission(unit, retreatPlot, "damaged-retreat", true)
+						if retreated then
+							if unitKey ~= nil then
+								SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = SC_GetStrategicOrderCapForUnit(unit, unitInfo, role)
+							end
+							healed = healed + 1
+							SC_Debug("heal retreat unit="..SC_GetUnitDebugLabel(unit).." class="..tostring(profile.doctrineClass).." damage="..tostring(unit:GetDamage()).." enemyDistance="..tostring(enemyDistance).." to="..SC_GetPlotDebug(retreatPlot))
+						end
+					end
+				end
+				local ok = false
+				if not retreated then
+					ok = SC_SendUnitMission(unit, GameInfoTypes.MISSION_HEAL)
+				end
 				if ok and (SC_UnitNeedsOrder == nil or not SC_UnitNeedsOrder(unit)) then
 					healed = healed + 1
-				else
+				elseif not retreated then
 					if unitKey ~= nil then
 						SC_HEAL_FAILED_THIS_TURN[unitKey] = true
 					end
@@ -2702,6 +3573,7 @@ local function SC_AutomateDamagedUnitHealing(player)
 						SC_Debug("heal failed unit="..SC_GetUnitDebugLabel(unit).." state="..SC_GetUnitOrderDebug(unit))
 					end
 				end
+			end
 			end
 		end
 	end
@@ -2924,7 +3796,7 @@ local function SC_BuildAutomationResults(player, atWar)
 		research = SC_AutomateResearch(player),
 		upgrades = SC_AutomateUnitUpgrades(player),
 		heals = SC_AutomateDamagedUnitHealing(player),
-		defenseActions = SC_AutomateLocalDefense(player, atWar),
+		defenseActions = SC_AutomateAirSuperiority(player, atWar) + SC_AutomateLocalDefense(player, atWar),
 		cityStrikes = SC_AutomateCityRangedStrike(player, atWar),
 		idlePosture = SC_AutomateIdlePosture(player)
 	}
@@ -3118,7 +3990,7 @@ local function SC_RunOnce()
 	SC_CONFIG.AutoCityProduction = true
 	SC_CONFIG.AutoLocalDefense = true
 	local cityOrders, cityDetails = SC_AutomateCities(player, atWar)
-	local defenseActions = SC_AutomateLocalDefense(player, atWar)
+	local defenseActions = SC_AutomateAirSuperiority(player, atWar) + SC_AutomateLocalDefense(player, atWar)
 	SC_CONFIG.AutoCityProduction = oldCityAutomation
 	SC_CONFIG.AutoLocalDefense = oldDefenseAutomation
 	SC_SendNotification(player, "战略指挥部", "手动执行完成[NEWLINE]城市安排: "..tostring(cityOrders).."[NEWLINE]远程反击: "..tostring(defenseActions))
@@ -4203,10 +5075,29 @@ local function SC_ScoreStrategicTarget(player, unit, role, unitPlot, targetPlot,
 	local coastalTarget = SC_IsCoastalAssaultPlot(targetPlot)
 	local unitInfo = SC_GetUnitInfo(unit)
 	local unitTag = SC_GetUnitCombatTag(unit, unitInfo, role)
+	local doctrineClass = SC_GetUnitDoctrineClass(unit, unitInfo, role)
+	local focusPlot = SC_GetOperationFocusPlot(player, unit, unitInfo, SC_GetUnitCapabilityProfile(unit, unitInfo, role))
+	if focusPlot ~= nil then
+		local focusDistance = Map.PlotDistance(targetPlot:GetX(), targetPlot:GetY(), focusPlot:GetX(), focusPlot:GetY())
+		if focusDistance <= SC_GetConfig("OperationFocusRadius", 5) then
+			local focusScore = 620 - focusDistance * 80
+			score = score + focusScore
+			SC_AddScoreReason(reasons, "operationFocus", focusScore)
+		end
+	end
 	if enemyCity ~= nil then
 		local cityDamage, cityMaxHP, cityDamageRatio = SC_GetCityDamageInfo(enemyCity)
+		local enemyScreen = SC_CountEnemyCombatPresenceNearPlot(player, targetPlot, SC_GetConfig("OperationEnemyScreenRadius", 4), 6)
 		score = score + 260
 		SC_AddScoreReason(reasons, "city", 260)
+		if enemyScreen > 0 and cityDamageRatio < SC_GetConfig("CityCaptureReadyDamageRatio", 0.72) then
+			local screenPenalty = math.min(enemyScreen, 4) * 340
+			if doctrineClass == "siege_artillery" or doctrineClass == "arsenal_capital" then
+				screenPenalty = math.floor(screenPenalty * 0.4)
+			end
+			score = score - screenPenalty
+			SC_AddScoreReason(reasons, "destroyScreenFirst", -screenPenalty)
+		end
 		local cityDamageScore = cityDamage * 3
 		score = score + cityDamageScore
 		SC_AddScoreReason(reasons, "cityDamage", cityDamageScore)
@@ -4295,6 +5186,10 @@ local function SC_ScoreStrategicTarget(player, unit, role, unitPlot, targetPlot,
 			score = score - 180
 			SC_AddScoreReason(reasons, "needsCaptureUnit", -180)
 		end
+		if doctrineClass == "fleet_carrier" or doctrineClass == "ballistic_submarine" then
+			score = score - 620
+			SC_AddScoreReason(reasons, "protectedAssetNoSiege", -620)
+		end
 		if SC_GetSafeNumber(function() return enemyCity:IsCapital() and 1 or 0 end, 0) > 0 then
 			score = score + 120
 			SC_AddScoreReason(reasons, "capital", 120)
@@ -4302,6 +5197,8 @@ local function SC_ScoreStrategicTarget(player, unit, role, unitPlot, targetPlot,
 	elseif enemyUnit ~= nil then
 		local enemyInfo = SC_GetUnitInfo(enemyUnit)
 		local enemyRole = SC_GetUnitRole(enemyUnit, enemyInfo)
+		local doctrineScore = SC_GetDoctrineTargetModifier(unit, unitInfo, role, enemyUnit, enemyInfo, enemyRole, reasons)
+		score = score + doctrineScore
 		local protectedThreatScore = SC_GetProtectedAssetThreatScore(player, targetPlot, enemyUnit, enemyInfo, enemyRole, role, unitTag, reasons)
 		score = score + protectedThreatScore
 		local enemyDamage = SC_GetSafeNumber(function() return enemyUnit:GetDamage() end, 0)
@@ -4474,6 +5371,48 @@ function SC_PlotWouldRequireNewWar(player, plot)
 	return true
 end
 
+function SC_IsCombatTargetAuthorized(unit, plot)
+	if unit == nil or plot == nil then
+		return false
+	end
+	local ownerID = SC_GetSafeNumber(function() return unit:GetOwner() end, -1)
+	local player = Players[ownerID]
+	if player == nil then
+		return false
+	end
+	local team = Teams[player:GetTeam()]
+	if team == nil then
+		return false
+	end
+	local foundWarTarget = false
+	local city = nil
+	pcall(function() city = plot:GetPlotCity() end)
+	if city ~= nil then
+		local cityOwner = SC_GetSafeNumber(function() return city:GetOwner() end, -1)
+		local cityPlayer = Players[cityOwner]
+		if cityPlayer == nil or not cityPlayer:IsAlive() or not team:IsAtWar(cityPlayer:GetTeam()) then
+			return false
+		end
+		foundWarTarget = true
+	end
+	local count = SC_GetSafeNumber(function() return plot:GetNumUnits() end, 0)
+	for i = 0, count - 1, 1 do
+		local targetUnit = nil
+		pcall(function() targetUnit = plot:GetUnit(i) end)
+		if targetUnit ~= nil then
+			local targetOwner = SC_GetSafeNumber(function() return targetUnit:GetOwner() end, -1)
+			if targetOwner ~= ownerID then
+				local targetPlayer = Players[targetOwner]
+				if targetPlayer == nil or not targetPlayer:IsAlive() or not team:IsAtWar(targetPlayer:GetTeam()) then
+					return false
+				end
+				foundWarTarget = true
+			end
+		end
+	end
+	return foundWarTarget
+end
+
 function SC_PlotMatchesUnitDomain(unitInfo, plot)
 	if unitInfo == nil or plot == nil then
 		return false
@@ -4483,6 +5422,9 @@ function SC_PlotMatchesUnitDomain(unitInfo, plot)
 	end
 	if unitInfo.Domain == "DOMAIN_LAND" then
 		return SC_GetSafeNumber(function() return plot:IsWater() and 1 or 0 end, 0) <= 0
+	end
+	if unitInfo.Domain == "DOMAIN_HOVER" then
+		return true
 	end
 	return false
 end
@@ -4591,7 +5533,11 @@ function SC_MoveCandidateIsUsable(player, unit, unitInfo, sourcePlot, plot, laye
 		SC_BumpMoveReject(stats, "hostile")
 		return false, nil
 	end
-	if not SC_PlotMatchesUnitDomain(unitInfo, plot) then
+	local domainMatches = SC_PlotMatchesUnitDomain(unitInfo, plot)
+	if SC_IsUnitEmbarked ~= nil and SC_IsUnitEmbarked(unit) then
+		domainMatches = SC_GetSafeNumber(function() return plot:IsWater() and 1 or 0 end, 0) > 0
+	end
+	if not domainMatches then
 		SC_BumpMoveReject(stats, "domain")
 		return false, nil
 	end
@@ -4631,6 +5577,60 @@ function SC_GetMoveRejectStatsDebug(stats)
 		" rejectBlocked="..tostring(stats.blocked or 0)..
 		" rejectHostile="..tostring(stats.hostile or 0)..
 		" rejectNewWar="..tostring(stats.newWar or 0)
+end
+
+function SC_FindSafeAdvanceWaypoint(player, unit, destinationPlot, reserved, stats, maxRadius)
+	if player == nil or unit == nil or destinationPlot == nil then
+		return nil
+	end
+	local sourcePlot = unit:GetPlot()
+	local unitInfo = SC_GetUnitInfo(unit)
+	if sourcePlot == nil or unitInfo == nil then
+		return nil
+	end
+	local sourceDistance = Map.PlotDistance(sourcePlot:GetX(), sourcePlot:GetY(), destinationPlot:GetX(), destinationPlot:GetY())
+	local radius = math.max(1, maxRadius or SC_GetConfig("StrategicWaypointRadius", 5))
+	local layer = SC_GetUnitStackLayer(unit)
+	local profile = SC_GetUnitCapabilityProfile(unit, unitInfo)
+	local bestPlot = nil
+	local bestScore = -999999
+	for dx = -radius, radius, 1 do
+		for dy = -radius, radius, 1 do
+			local plot = SC_GetNearbyPlot(sourcePlot:GetX(), sourcePlot:GetY(), dx, dy, radius)
+			local usable, moveDistance = SC_MoveCandidateIsUsable(player, unit, unitInfo, sourcePlot, plot, layer, reserved, nil, stats)
+			if usable and moveDistance ~= nil and moveDistance <= radius then
+				local checked, canEnter = pcall(function() return unit:CanMoveInto(plot, 0) end)
+				if checked and canEnter then
+					local targetDistance = Map.PlotDistance(plot:GetX(), plot:GetY(), destinationPlot:GetX(), destinationPlot:GetY())
+					local progress = sourceDistance - targetDistance
+					if progress > 0 then
+						local score = progress * 220 - moveDistance * 12
+						local owner = SC_GetSafeNumber(function() return plot:GetOwner() end, -1)
+						if owner == player:GetID() then
+							score = score + 140
+						elseif owner < 0 then
+							score = score + 60
+						end
+						if unitInfo.Domain == "DOMAIN_SEA" then
+							local threats = SC_CountEnemySeaThreatsNearPlot ~= nil and SC_CountEnemySeaThreatsNearPlot(player, plot, SC_GetConfig("FleetStandoffThreatRadius", 4)) or 0
+							if SC_IsProtectedDoctrineClass(profile.doctrineClass) then
+								score = score - threats * 320
+							elseif SC_IsScreenDoctrineClass(profile.doctrineClass) then
+								score = score - threats * 35
+							else
+								score = score - threats * 100
+							end
+						end
+						if score > bestScore then
+							bestScore = score
+							bestPlot = plot
+						end
+					end
+				end
+			end
+		end
+	end
+	return bestPlot
 end
 
 local function SC_FindStackEscapePlot(player, unit, sourcePlot, reserved, rejected, stats)
@@ -4836,6 +5836,10 @@ function SC_FindStandoffMovePlot(player, unit, role, targetPlot, reserved, stats
 		minRange = SC_GetConfig("ArsenalShipStandoffMinDistance", 5)
 		maxRange = SC_GetConfig("ArsenalShipStandoffMaxDistance", 8)
 		desiredRange = math.min(math.max(range, minRange), maxRange)
+	elseif unitTag == "strategic_submarine" then
+		minRange = SC_GetConfig("BallisticSubmarineStandoffMinDistance", 6)
+		maxRange = SC_GetConfig("BallisticSubmarineStandoffMaxDistance", 10)
+		desiredRange = math.floor((minRange + maxRange) / 2 + 0.5)
 	elseif unitTag == "missile_screen" then
 		minRange = SC_GetConfig("MissileScreenStandoffMinDistance", 1)
 		maxRange = SC_GetConfig("MissileScreenStandoffMaxDistance", 3)
@@ -4884,7 +5888,7 @@ function SC_FindStandoffMovePlot(player, unit, role, targetPlot, reserved, stats
 							if targetDistance <= minRange then
 								score = score - 180
 							end
-						elseif unitTag == "arsenal_ship" then
+						elseif unitTag == "arsenal_ship" or unitTag == "strategic_submarine" then
 							score = score + 120
 							if targetDistance >= minRange then
 								score = score + 100
@@ -4931,6 +5935,97 @@ function SC_FindStandoffMovePlot(player, unit, role, targetPlot, reserved, stats
 		end
 	end
 	return bestPlot
+end
+
+function SC_FindSupportFormationMovePlan(player, unit, reserved, stats)
+	if player == nil or unit == nil then
+		return nil, stats
+	end
+	local unitPlot = unit:GetPlot()
+	local unitInfo = SC_GetUnitInfo(unit)
+	local role = SC_GetUnitRole(unit, unitInfo)
+	local profile = SC_GetUnitCapabilityProfile(unit, unitInfo, role)
+	if unitPlot == nil or unitInfo == nil or not SC_IsScreenDoctrineClass(profile.doctrineClass) then
+		return nil, stats
+	end
+	stats = stats or { candidates = 0, noPlot = 0, noMovePlot = 0, stationary = 0 }
+	local bestAnchor = nil
+	local bestAnchorScore = -999999
+	for otherUnit in player:Units() do
+		if otherUnit ~= nil and otherUnit ~= unit and not otherUnit:IsDead() then
+			local otherInfo = SC_GetUnitInfo(otherUnit)
+			local otherPlot = otherUnit:GetPlot()
+			if otherInfo ~= nil and otherPlot ~= nil then
+				local otherProfile = SC_GetUnitCapabilityProfile(otherUnit, otherInfo)
+				local anchorValue = 0
+				if SC_IsProtectedDoctrineClass(otherProfile.doctrineClass) and otherInfo.Domain == unitInfo.Domain then
+					anchorValue = 900
+				elseif SC_IsFragileTransportUnit ~= nil and SC_IsFragileTransportUnit(otherUnit, otherInfo) and unitInfo.Domain == "DOMAIN_SEA" then
+					anchorValue = 1100
+				elseif profile.doctrineClass == "mobile_air_defense"
+					and (otherProfile.doctrineClass == "siege_artillery" or otherProfile.doctrineClass == "ranged_support" or otherProfile.doctrineClass == "super_heavy") then
+					anchorValue = 700
+				end
+				if anchorValue > 0 then
+					local distance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), otherPlot:GetX(), otherPlot:GetY())
+					local score = anchorValue - distance * 25 + (otherProfile.power or 0)
+					if score > bestAnchorScore then
+						bestAnchorScore = score
+						bestAnchor = otherUnit
+					end
+				end
+			end
+		end
+	end
+	if bestAnchor == nil then
+		return nil, stats
+	end
+	local anchorPlot = bestAnchor:GetPlot()
+	local currentDistance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), anchorPlot:GetX(), anchorPlot:GetY())
+	local desiredRadius = SC_GetConfig("SupportFormationRadius", 2)
+	if currentDistance <= desiredRadius then
+		return nil, stats
+	end
+	local layer = SC_GetUnitStackLayer(unit)
+	local bestPlot = nil
+	local bestScore = -999999
+	local searchRadius = math.max(desiredRadius, 2)
+	for dx = -searchRadius, searchRadius, 1 do
+		for dy = -searchRadius, searchRadius, 1 do
+			local plot = SC_GetNearbyPlot(anchorPlot:GetX(), anchorPlot:GetY(), dx, dy, searchRadius)
+			local usable, moveDistance = SC_MoveCandidateIsUsable(player, unit, unitInfo, unitPlot, plot, layer, reserved, nil, stats)
+			if usable and moveDistance ~= nil then
+				local anchorDistance = Map.PlotDistance(plot:GetX(), plot:GetY(), anchorPlot:GetX(), anchorPlot:GetY())
+				if anchorDistance >= 1 and anchorDistance <= desiredRadius then
+					local score = 2300 - moveDistance * 12 - anchorDistance * 90
+					if profile.intercept > 0 then
+						score = score + 180
+					end
+					if score > bestScore then
+						bestScore = score
+						bestPlot = plot
+					end
+				end
+			end
+		end
+	end
+	if bestPlot == nil then
+		return nil, stats
+	end
+	stats.bestScore = bestScore
+	stats.bestKind = "formation"
+	stats.bestReason = "protect:"..SC_GetUnitDebugLabel(bestAnchor)
+	return {
+		targetPlot = anchorPlot,
+		movePlot = bestPlot,
+		mode = "formation",
+		kind = "formation",
+		reason = stats.bestReason,
+		targetScore = bestAnchorScore,
+		planScore = bestScore,
+		moveDistance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), bestPlot:GetX(), bestPlot:GetY()),
+		targetDistance = currentDistance
+	}, stats
 end
 
 function SC_CanUnitMoveIntoPlotForCapture(unit, plot)
@@ -5115,7 +6210,7 @@ function SC_AutomateCityCaptureFinishers(player, atWar)
 						if ok then
 							local unitKey = SC_GetUnitTurnKey(unit)
 							if unitKey ~= nil then
-								SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = true
+								SC_RecordStrategicOrder(unitKey)
 								SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = nil
 								SC_TACTICAL_QUEUED_THIS_TURN[unitKey] = nil
 							end
@@ -5167,6 +6262,56 @@ function SC_GetStrategicPlanStatsDebug(stats)
 		" "..SC_GetMoveRejectStatsDebug(stats)
 end
 
+function SC_FindParadropStagingPlot(player, unit, targetPlot, reserved, stats)
+	if player == nil or unit == nil or targetPlot == nil then
+		return nil
+	end
+	local sourcePlot = unit:GetPlot()
+	local unitInfo = SC_GetUnitInfo(unit)
+	local profile = SC_GetUnitCapabilityProfile(unit, unitInfo)
+	if sourcePlot == nil or unitInfo == nil or (profile.dropRange or 0) <= 0 then
+		return nil
+	end
+	local layer = SC_GetUnitStackLayer(unit)
+	local bestPlot = nil
+	local bestScore = -999999
+	for radius = 1, 2, 1 do
+		for dx = -radius, radius, 1 do
+			for dy = -radius, radius, 1 do
+				local plot = SC_GetNearbyPlot(targetPlot:GetX(), targetPlot:GetY(), dx, dy, radius)
+				if plot ~= nil then
+					local sourceDistance = Map.PlotDistance(sourcePlot:GetX(), sourcePlot:GetY(), plot:GetX(), plot:GetY())
+					local targetDistance = Map.PlotDistance(plot:GetX(), plot:GetY(), targetPlot:GetX(), targetPlot:GetY())
+					if sourceDistance <= profile.dropRange and targetDistance >= 1 and targetDistance <= 2 then
+						local usable = SC_MoveCandidateIsUsable(player, unit, unitInfo, sourcePlot, plot, layer, reserved, nil, stats)
+						if usable then
+							local canDrop = true
+							local checked, result = pcall(function() return unit:CanParadropAt(plot:GetX(), plot:GetY()) end)
+							if checked then
+								canDrop = result
+							end
+							if canDrop then
+								local score = 1600 - targetDistance * 160 - sourceDistance * 5
+								local owner = SC_GetSafeNumber(function() return plot:GetOwner() end, -1)
+								if owner == player:GetID() then
+									score = score + 160
+								elseif owner < 0 then
+									score = score + 80
+								end
+								if score > bestScore then
+									bestScore = score
+									bestPlot = plot
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return bestPlot
+end
+
 function SC_FindStrategicMovePlan(player, unit, reservedMovePlots)
 	if player == nil or unit == nil then
 		return nil, nil
@@ -5179,6 +6324,7 @@ function SC_FindStrategicMovePlan(player, unit, reservedMovePlots)
 	local unitInfo = SC_GetUnitInfo(unit)
 	local role = SC_GetUnitRole(unit, unitInfo)
 	local unitTag = SC_GetUnitCombatTag(unit, unitInfo, role)
+	local unitProfile = SC_GetUnitCapabilityProfile(unit, unitInfo, role)
 	local bestPlan = nil
 	local bestScore = -999999
 	local stats = {
@@ -5202,8 +6348,13 @@ function SC_FindStrategicMovePlan(player, unit, reservedMovePlots)
 		end
 		local movePlot = targetPlot
 		local mode = "direct"
+		local targetDistance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), targetPlot:GetX(), targetPlot:GetY())
 		local captureMover = kind == "city" and enemyCity ~= nil and SC_CanActAsCityCaptureUnit(unit, unitInfo, role)
-		if captureMover and SC_IsCityReadyForCapture(enemyCity) then
+		if unitProfile.doctrineClass == "airborne_raider" and targetDistance <= (unitProfile.dropRange or 0) and targetDistance > 2 then
+			movePlot = SC_FindParadropStagingPlot(player, unit, targetPlot, reservedMovePlots, stats)
+			mode = "paradrop"
+			targetReason = tostring(targetReason or "base")..",airborneStaging"
+		elseif captureMover and SC_IsCityReadyForCapture(enemyCity) then
 			local captureMode = nil
 			movePlot, captureMode = SC_FindCityCaptureMovePlot(player, unit, role, targetPlot, reservedMovePlots, stats)
 			if movePlot ~= nil then
@@ -5219,6 +6370,20 @@ function SC_FindStrategicMovePlan(player, unit, reservedMovePlots)
 			movePlot = SC_FindStandoffMovePlot(player, unit, role, targetPlot, reservedMovePlots, stats)
 			mode = "standoff"
 		end
+		if movePlot ~= nil and mode ~= "paradrop" then
+			local directMoveDistance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), movePlot:GetX(), movePlot:GetY())
+			if directMoveDistance > SC_GetConfig("StrategicWaypointTriggerDistance", 5) then
+				local waypoint = SC_FindSafeAdvanceWaypoint(player, unit, movePlot, reservedMovePlots, stats)
+				if waypoint ~= nil then
+					movePlot = waypoint
+					mode = tostring(mode).."-waypoint"
+					targetReason = tostring(targetReason or "base")..",safeWaypoint"
+				else
+					movePlot = nil
+					targetReason = tostring(targetReason or "base")..",noSafeWaypoint"
+				end
+			end
+		end
 		if movePlot == nil then
 			stats.noMovePlot = stats.noMovePlot + 1
 			return
@@ -5228,7 +6393,6 @@ function SC_FindStrategicMovePlan(player, unit, reservedMovePlots)
 			stats.stationary = stats.stationary + 1
 			return
 		end
-		local targetDistance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), targetPlot:GetX(), targetPlot:GetY())
 		local planScore = targetScore - moveDistance * 7
 		if role == "carrier" then
 			planScore = planScore + 120
@@ -5318,21 +6482,59 @@ local function SC_AutomateStrategicMovement(player, atWar)
 			SC_Debug(text)
 		end
 	end
-	SC_Debug("strategicMove start maxMoves="..tostring(maxMoves).." warProfile="..tostring(SC_GetConfig("WarProfile", "ADVANCE")))
+	local orderedUnits = {}
 	for unit in player:Units() do
+		if unit ~= nil then
+			table.insert(orderedUnits, unit)
+		end
+	end
+	table.sort(orderedUnits, function(a, b)
+		local aInfo = SC_GetUnitInfo(a)
+		local bInfo = SC_GetUnitInfo(b)
+		local aProfile = SC_GetUnitCapabilityProfile(a, aInfo)
+		local bProfile = SC_GetUnitCapabilityProfile(b, bInfo)
+		local aPhase = SC_GetStrategicMovementPhase(a, aInfo)
+		local bPhase = SC_GetStrategicMovementPhase(b, bInfo)
+		if aPhase ~= bPhase then
+			return aPhase < bPhase
+		end
+		return (aProfile.power or 0) > (bProfile.power or 0)
+	end)
+	SC_Debug("strategicMove start maxMoves="..tostring(maxMoves).." warProfile="..tostring(SC_GetConfig("WarProfile", "ADVANCE")))
+	for _, unit in ipairs(orderedUnits) do
 		if moved >= maxMoves then
 			break
 		end
 		if unit ~= nil and unit:CanMove() and unit:GetDamage() < SC_GetConfig("HealDamageThreshold", 45) then
 			local unitInfo = SC_GetUnitInfo(unit)
 			local role = SC_GetUnitRole(unit, unitInfo)
+			local doctrineClass = SC_GetUnitDoctrineClass(unit, unitInfo, role)
 			local unitKey = SC_GetUnitTurnKey(unit)
+			local strategicCount = SC_GetStrategicOrderCount(unitKey)
+			local strategicCap = SC_GetStrategicOrderCapForUnit(unit, unitInfo, role)
 			if not SC_IsCombatAutomationUnit(unit, unitInfo) then
 				debugMove("strategicMove noncombat-skip unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role))
-			elseif unitKey ~= nil and SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] then
-				debugMove("strategicMove turn-skip unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role))
+			elseif unitKey ~= nil and strategicCount >= strategicCap then
+				debugMove("strategicMove turn-skip unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." class="..tostring(doctrineClass).." orders="..tostring(strategicCount).."/"..tostring(strategicCap))
+			elseif SC_IsFragileTransportUnit ~= nil and SC_IsFragileTransportUnit(unit, unitInfo) then
+				if unitKey ~= nil then
+					SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = strategicCap
+				end
+				debugMove("strategicMove convoy-owned-skip unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role))
+			elseif doctrineClass == "static_fortress" or (doctrineClass == "line_defender" and SC_GetConfig("WarProfile", "ADVANCE") ~= "ASSAULT") then
+				if unitKey ~= nil then
+					SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = strategicCap
+				end
+				debugMove("strategicMove doctrine-hold unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." class="..tostring(doctrineClass))
 			elseif SC_CanStrategicMoveRole(role) then
-				local plan, planStats = SC_FindStrategicMovePlan(player, unit, reservedMovePlots)
+				local plan = nil
+				local planStats = nil
+				if SC_IsScreenDoctrineClass(doctrineClass) then
+					plan, planStats = SC_FindSupportFormationMovePlan(player, unit, reservedMovePlots, {})
+				end
+				if plan == nil then
+					plan, planStats = SC_FindStrategicMovePlan(player, unit, reservedMovePlots)
+				end
 				local unitPlot = unit:GetPlot()
 				if plan ~= nil and unitPlot ~= nil then
 					local targetPlot = plan.targetPlot
@@ -5343,6 +6545,7 @@ local function SC_AutomateStrategicMovement(player, atWar)
 						if distance > 0 then
 							debugMove("strategicMove order unit="..SC_GetUnitDebugLabel(unit)..
 								" role="..tostring(role)..
+								" class="..tostring(doctrineClass)..
 								" tag="..tostring(SC_GetUnitCombatTag(unit, unitInfo, role))..
 								" mode="..mode..
 								" kind="..tostring(plan.kind)..
@@ -5351,16 +6554,26 @@ local function SC_AutomateStrategicMovement(player, atWar)
 								" moveTo="..SC_GetPlotDebug(movePlot)..
 								" distance="..tostring(distance)..
 								" targetDistance="..tostring(plan.targetDistance)..
+								" orders="..tostring(strategicCount).."/"..tostring(strategicCap)..
 								" score="..tostring(plan.planScore)..
 								" reason="..tostring(plan.reason or "nil")..
 								" "..SC_GetStrategicPlanStatsDebug(planStats))
-							local ok = SC_TryMoveMission(unit, movePlot, "strategic")
+							local ok = false
+							if mode == "paradrop" then
+								local paradropMission = SC_GetMissionID("MISSION_PARADROP")
+								ok = paradropMission ~= nil and SC_SendUnitMission(unit, paradropMission, movePlot:GetX(), movePlot:GetY())
+								if not ok and paradropMission ~= nil and SC_TryDirectTargetedMission ~= nil then
+									ok = SC_TryDirectTargetedMission(unit, paradropMission, movePlot, "strategic-paradrop")
+								end
+							else
+								ok = SC_TryMoveMission(unit, movePlot, "strategic")
+							end
 							if ok then
-								if mode == "standoff" or string.sub(tostring(mode), 1, 7) == "capture" then
+								if mode == "paradrop" or mode == "formation" or string.sub(tostring(mode), 1, 8) == "standoff" or string.sub(tostring(mode), 1, 7) == "capture" then
 									SC_ReserveMovePlot(reservedMovePlots, movePlot, SC_GetUnitStackLayer(unit))
 								end
 								if unitKey ~= nil then
-									SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = true
+									SC_RecordStrategicOrder(unitKey)
 									SC_TACTICAL_NO_TARGET_THIS_TURN[unitKey] = nil
 									SC_TACTICAL_QUEUED_THIS_TURN[unitKey] = nil
 								end
@@ -5377,25 +6590,25 @@ local function SC_AutomateStrategicMovement(player, atWar)
 									" state="..SC_GetUnitOrderDebug(unit)..
 									" "..SC_GetStrategicPlanStatsDebug(planStats))
 								if unitKey ~= nil then
-									SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = true
+									SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = strategicCap
 								end
 							end
 						else
 							debugMove("strategicMove already-positioned unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." plot="..SC_GetPlotDebug(unitPlot).." "..SC_GetStrategicPlanStatsDebug(planStats))
 							if unitKey ~= nil then
-								SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = true
+								SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = strategicCap
 							end
 						end
 					else
 						debugMove("strategicMove no-move-plot unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." target="..SC_GetPlotDebug(targetPlot).." range="..tostring(SC_GetUnitRangeValue(unit, unitInfo)).." "..SC_GetStrategicPlanStatsDebug(planStats))
 						if unitKey ~= nil then
-							SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = true
+							SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = strategicCap
 						end
 					end
 				else
 					debugMove("strategicMove no-plan unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." "..SC_GetStrategicPlanStatsDebug(planStats))
 					if unitKey ~= nil then
-						SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = true
+						SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = strategicCap
 					end
 				end
 			else
@@ -5961,10 +7174,13 @@ function SC_IsNavalEscortUnit(unit, unitInfo, role)
 		return false
 	end
 	role = role or SC_GetUnitRole(unit, unitInfo)
-	return role == "naval_melee"
-		or role == "naval_ranged"
-		or role == "missile_carrier"
-		or role == "submarine"
+	local profile = SC_GetUnitCapabilityProfile(unit, unitInfo, role)
+	if SC_IsProtectedDoctrineClass(profile.doctrineClass) then
+		return false
+	end
+	return SC_IsScreenDoctrineClass(profile.doctrineClass)
+		or profile.doctrineClass == "naval_assault"
+		or profile.doctrineClass == "surface_fire_support"
 end
 
 function SC_CountFriendlyNavalEscortsNearPlot(player, targetPlot, radius)
@@ -5999,11 +7215,17 @@ function SC_CountEnemySeaThreatsNearPlot(player, targetPlot, radius)
 	if player == nil or targetPlot == nil then
 		return 0
 	end
+	radius = radius or SC_GetConfig("TransportThreatRadius", 6)
+	local plotIndex = nil
+	pcall(function() plotIndex = targetPlot:GetPlotIndex() end)
+	local cacheKey = plotIndex ~= nil and tostring(player:GetID()).."|"..tostring(plotIndex).."|"..tostring(radius) or nil
+	if cacheKey ~= nil and SC_SEA_THREAT_CACHE_THIS_TURN[cacheKey] ~= nil then
+		return SC_SEA_THREAT_CACHE_THIS_TURN[cacheKey]
+	end
 	local team = Teams[player:GetTeam()]
 	if team == nil then
 		return 0
 	end
-	radius = radius or SC_GetConfig("TransportThreatRadius", 6)
 	local count = 0
 	for otherID, otherPlayer in pairs(Players) do
 		if otherPlayer ~= nil and otherPlayer:IsAlive() and otherPlayer:GetID() ~= player:GetID() and team:IsAtWar(otherPlayer:GetTeam()) then
@@ -6022,7 +7244,151 @@ function SC_CountEnemySeaThreatsNearPlot(player, targetPlot, radius)
 			end
 		end
 	end
+	if cacheKey ~= nil then
+		SC_SEA_THREAT_CACHE_THIS_TURN[cacheKey] = count
+	end
 	return count
+end
+
+function SC_FindTransportOperationTarget(player, transport)
+	if player == nil or transport == nil then
+		return nil, "missing"
+	end
+	local team = Teams[player:GetTeam()]
+	local transportPlot = transport:GetPlot()
+	if team == nil or transportPlot == nil then
+		return nil, "no-team-or-plot"
+	end
+	local bestPlot = nil
+	local bestScore = -999999
+	local bestReason = "none"
+	for otherID, otherPlayer in pairs(Players) do
+		if otherPlayer ~= nil and otherPlayer:IsAlive() and otherPlayer:GetID() ~= player:GetID() and team:IsAtWar(otherPlayer:GetTeam()) then
+			for city in otherPlayer:Cities() do
+				local cityPlot = city:Plot()
+				if cityPlot ~= nil and SC_IsWaterOrCoastalStrategicPlot(cityPlot) then
+					local distance = Map.PlotDistance(transportPlot:GetX(), transportPlot:GetY(), cityPlot:GetX(), cityPlot:GetY())
+					local damage = SC_GetSafeNumber(function() return city:GetDamage() end, 0)
+					local score = 2800 - distance * 18 + damage * 2
+					if SC_GetSafeNumber(function() return city:IsCapital() and 1 or 0 end, 0) > 0 then
+						score = score + 180
+					end
+					if score > bestScore then
+						bestScore = score
+						bestPlot = cityPlot
+						bestReason = "coastal-city"
+					end
+				end
+			end
+			for enemyUnit in otherPlayer:Units() do
+				local enemyPlot = enemyUnit ~= nil and enemyUnit:GetPlot() or nil
+				local enemyInfo = SC_GetUnitInfo(enemyUnit)
+				if enemyPlot ~= nil and enemyInfo ~= nil and (enemyInfo.Domain == "DOMAIN_SEA" or SC_IsUnitEmbarked(enemyUnit)) then
+					local distance = Map.PlotDistance(transportPlot:GetX(), transportPlot:GetY(), enemyPlot:GetX(), enemyPlot:GetY())
+					local score = 1600 - distance * 20
+					if score > bestScore then
+						bestScore = score
+						bestPlot = enemyPlot
+						bestReason = "sea-front"
+					end
+				end
+			end
+		end
+	end
+	return bestPlot, bestReason
+end
+
+function SC_TryAdvanceEscortedTransport(player, transport, reserved)
+	if player == nil or transport == nil or not transport:CanMove() then
+		return 0, "cannot-move"
+	end
+	local transportPlot = transport:GetPlot()
+	local transportInfo = SC_GetUnitInfo(transport)
+	if transportPlot == nil or transportInfo == nil then
+		return 0, "missing-plot"
+	end
+	local targetPlot, targetReason = SC_FindTransportOperationTarget(player, transport)
+	if targetPlot == nil then
+		SC_TryHoldTransport(transport, "convoy-no-target")
+		return 1, "hold-no-target"
+	end
+	local waypointStats = {}
+	local waypoint = SC_FindSafeAdvanceWaypoint(player, transport, targetPlot, reserved, waypointStats, SC_GetConfig("TransportConvoyWaypointRadius", 3))
+	if waypoint == nil then
+		SC_TryHoldTransport(transport, "convoy-no-waypoint")
+		return 1, "hold-no-waypoint"
+	end
+	local threats = SC_CountEnemySeaThreatsNearPlot(player, waypoint, SC_GetConfig("TransportThreatRadius", 6))
+	local requiredEscorts = SC_GetConfig("TransportMinimumEscorts", 1)
+	if threats > 0 then
+		requiredEscorts = SC_GetConfig("TransportEscortsUnderThreat", 2)
+	end
+	local coverage = SC_CountFriendlyNavalEscortsNearPlot(player, waypoint, SC_GetConfig("TransportEscortRadius", 2))
+	local actions = 0
+	local assemblyRadius = SC_GetConfig("TransportConvoyAssemblyRadius", 4)
+	while coverage < requiredEscorts do
+		local bestEscort = nil
+		local bestMovePlot = nil
+		local bestScore = -999999
+		for escort in player:Units() do
+			if escort ~= nil and not escort:IsDead() and escort:CanMove() then
+				local escortInfo = SC_GetUnitInfo(escort)
+				local escortRole = SC_GetUnitRole(escort, escortInfo)
+				local escortKey = SC_GetUnitTurnKey(escort)
+				local escortPlot = escort:GetPlot()
+				if escortPlot ~= nil and SC_IsNavalEscortUnit(escort, escortInfo, escortRole)
+					and (escortKey == nil or not SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN[escortKey]) then
+					local assemblyDistance = Map.PlotDistance(escortPlot:GetX(), escortPlot:GetY(), transportPlot:GetX(), transportPlot:GetY())
+					if assemblyDistance <= assemblyRadius then
+						local movePlot = SC_FindTransportEscortMovePlot(player, escort, waypoint, reserved, {})
+						if movePlot ~= nil then
+							local profile = SC_GetUnitCapabilityProfile(escort, escortInfo, escortRole)
+							local score = 1600 - assemblyDistance * 30 + (profile.intercept or 0) * 2
+							if profile.doctrineClass == "air_defense_screen" then
+								score = score + 420
+							elseif profile.doctrineClass == "escort_screen" or profile.doctrineClass == "naval_assault" then
+								score = score + 260
+							elseif profile.doctrineClass == "attack_submarine" then
+								score = score + 120
+							elseif SC_IsProtectedDoctrineClass(profile.doctrineClass) then
+								score = score - 500
+							end
+							if score > bestScore then
+								bestScore = score
+								bestEscort = escort
+								bestMovePlot = movePlot
+							end
+						end
+					end
+				end
+			end
+		end
+		if bestEscort == nil or bestMovePlot == nil or not SC_TryMoveMission(bestEscort, bestMovePlot, "convoy-screen", true) then
+			break
+		end
+		local escortKey = SC_GetUnitTurnKey(bestEscort)
+		if escortKey ~= nil then
+			SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN[escortKey] = true
+			SC_MarkStrategicUnitDone(bestEscort)
+		end
+		SC_ReserveMovePlot(reserved, bestMovePlot, SC_GetUnitStackLayer(bestEscort))
+		actions = actions + 1
+		coverage = SC_CountFriendlyNavalEscortsNearPlot(player, waypoint, SC_GetConfig("TransportEscortRadius", 2))
+	end
+	if coverage < requiredEscorts then
+		SC_TryHoldTransport(transport, "convoy-insufficient-screen")
+		return actions + 1, "hold-coverage="..tostring(coverage).."/"..tostring(requiredEscorts).." threats="..tostring(threats)
+	end
+	if not SC_TryMoveMission(transport, waypoint, "convoy-advance", true) then
+		SC_TryHoldTransport(transport, "convoy-move-failed")
+		return actions + 1, "hold-move-failed"
+	end
+	local transportKey = SC_GetUnitTurnKey(transport)
+	if transportKey ~= nil then
+		SC_MarkStrategicUnitDone(transport)
+	end
+	SC_ReserveMovePlot(reserved, waypoint, SC_GetUnitStackLayer(transport))
+	return actions + 1, "advance target="..tostring(targetReason).." waypoint="..SC_GetPlotDebug(waypoint).." coverage="..tostring(coverage).." threats="..tostring(threats)
 end
 
 function SC_FindTransportEscortMovePlot(player, escort, transportPlot, reserved, stats)
@@ -6106,6 +7472,7 @@ function SC_AutomateTransportEscort(player, atWar)
 		if transport ~= nil and not transport:IsDead() then
 			local transportInfo = SC_GetUnitInfo(transport)
 			if SC_IsFragileTransportUnit(transport, transportInfo) then
+				local transportKey = SC_GetUnitTurnKey(transport)
 				local transportPlot = transport:GetPlot()
 				if transportPlot ~= nil and (SC_GetSafeNumber(function() return transportPlot:IsWater() and 1 or 0 end, 0) > 0 or SC_IsUnitEmbarked(transport)) then
 					local escorts = SC_CountFriendlyNavalEscortsNearPlot(player, transportPlot, escortRadius)
@@ -6151,19 +7518,30 @@ function SC_AutomateTransportEscort(player, atWar)
 							local escortKey = SC_GetUnitTurnKey(bestEscort)
 							if escortKey ~= nil then
 								SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN[escortKey] = true
-								SC_STRATEGIC_ORDERED_THIS_TURN[escortKey] = true
+								SC_MarkStrategicUnitDone(bestEscort)
 							end
 							SC_ReserveMovePlot(reserved, bestMovePlot, SC_GetUnitStackLayer(bestEscort))
 							handled = handled + 1
+							local held = SC_TryHoldTransport(transport, "escort-assembling")
+							if transportKey ~= nil then
+								SC_MarkStrategicUnitDone(transport)
+							end
+							if held then
+								handled = handled + 1
+							end
 							debugEscort("transportEscort order escort="..SC_GetUnitDebugLabel(bestEscort)..
 								" transport="..SC_GetUnitDebugLabel(transport)..
 								" transportPlot="..SC_GetPlotDebug(transportPlot)..
 								" moveTo="..SC_GetPlotDebug(bestMovePlot)..
 								" threats="..tostring(threats)..
 								" escorts="..tostring(escorts)..
-								" score="..tostring(bestScore))
+								" score="..tostring(bestScore)..
+								" transportHeld="..SC_BoolText(held))
 						elseif SC_GetConfig("TransportHoldWithoutEscort", true) and transport:CanMove() then
 							if SC_TryHoldTransport(transport, "no-escort") then
+								if transportKey ~= nil then
+									SC_MarkStrategicUnitDone(transport)
+								end
 								handled = handled + 1
 								debugEscort("transportEscort hold transport="..SC_GetUnitDebugLabel(transport).." threats="..tostring(threats).." escorts="..tostring(escorts).." reason=no-escort")
 							else
@@ -6173,7 +7551,12 @@ function SC_AutomateTransportEscort(player, atWar)
 							debugEscort("transportEscort no-escort transport="..SC_GetUnitDebugLabel(transport).." threats="..tostring(threats).." escorts="..tostring(escorts).." reject="..SC_GetMoveRejectStatsDebug(searchStats))
 						end
 					else
-						debugEscort("transportEscort covered transport="..SC_GetUnitDebugLabel(transport).." plot="..SC_GetPlotDebug(transportPlot).." escorts="..tostring(escorts).." threats="..tostring(threats))
+						local convoyActions, convoyStatus = SC_TryAdvanceEscortedTransport(player, transport, reserved)
+						handled = handled + convoyActions
+						if transportKey ~= nil then
+							SC_MarkStrategicUnitDone(transport)
+						end
+						debugEscort("transportEscort convoy transport="..SC_GetUnitDebugLabel(transport).." plot="..SC_GetPlotDebug(transportPlot).." escorts="..tostring(escorts).." threats="..tostring(threats).." actions="..tostring(convoyActions).." status="..tostring(convoyStatus))
 					end
 				end
 			end
@@ -6687,6 +8070,7 @@ local function SC_HandleEndTurnBlocker(player, atWar, allowNotificationActivatio
 end
 
 local function SC_BuildAutomationResults(player, atWar)
+	SC_Debug("doctrineRoster "..SC_GetDoctrineRosterDebug(player))
 	local results = {
 		cityOrders = 0,
 		ideologies = 0,
@@ -6732,7 +8116,7 @@ local function SC_BuildAutomationResults(player, atWar)
 		results.heals = results.heals + SC_AutomateDamagedUnitHealing(player)
 		results.captureFinishers = results.captureFinishers + SC_AutomateCityCaptureFinishers(player, atWar)
 		results.transportEscort = results.transportEscort + SC_AutomateTransportEscort(player, atWar)
-		results.defenseActions = results.defenseActions + SC_AutomateLocalDefense(player, atWar)
+		results.defenseActions = results.defenseActions + SC_AutomateAirSuperiority(player, atWar) + SC_AutomateLocalDefense(player, atWar)
 		results.cityStrikes = results.cityStrikes + SC_AutomateCityRangedStrike(player, atWar)
 		results.strategicMoves = results.strategicMoves + SC_AutomateStrategicMovement(player, atWar)
 		results.stackedMoves = results.stackedMoves + SC_AutomateStackedUnits(player)
@@ -7105,6 +8489,10 @@ local function SC_ResetTakeoverPassCounterForTurn()
 		SC_TACTICAL_QUEUED_THIS_TURN = {}
 		SC_ASSAULT_SUPPORT_CACHE_THIS_TURN = {}
 		SC_PROTECTED_ASSET_CACHE_THIS_TURN = {}
+		SC_OPERATION_TARGET_CACHE_THIS_TURN = {}
+		SC_OPERATION_FOCUS_THIS_TURN = {}
+		SC_RETREAT_THREAT_CACHE_THIS_TURN = {}
+		SC_SEA_THREAT_CACHE_THIS_TURN = {}
 		SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN = {}
 		SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 		SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
@@ -8092,6 +9480,16 @@ local function SC_OnPopupAutoHandle(popupInfo)
 		SC_AutomateDiploVote(player)
 		SC_LAST_POPUPS_HANDLED = SC_LAST_POPUPS_HANDLED + 1
 		SC_MarkPopupProcessed(popupType)
+	elseif popupType == ButtonPopupTypes.BUTTONPOPUP_DECLAREWARMOVE
+		or popupType == ButtonPopupTypes.BUTTONPOPUP_DECLAREWARRANGESTRIKE
+		or popupType == ButtonPopupTypes.BUTTONPOPUP_DECLAREWAR_PLUNDER_TRADE_ROUTE then
+		SC_Debug("popup reject-new-war type="..SC_GetEnumDebugName(ButtonPopupTypes, popupType)..
+			" rivalTeam="..tostring(popupInfo.Data1)..
+			" target="..tostring(popupInfo.Data2)..","..tostring(popupInfo.Data3))
+		pcall(function() UI.SetInterfaceMode(InterfaceModeTypes.INTERFACEMODE_SELECTION) end)
+		SC_LAST_POPUPS_HANDLED = SC_LAST_POPUPS_HANDLED + 1
+		SC_MarkPopupProcessed(popupType)
+		runPassAfterPopup = false
 	elseif popupType == ButtonPopupTypes.BUTTONPOPUP_DIPLO_VOTE or popupType == ButtonPopupTypes.BUTTONPOPUP_VOTE_RESULTS or popupType == ButtonPopupTypes.BUTTONPOPUP_TECH_AWARD or popupType == ButtonPopupTypes.BUTTONPOPUP_NEW_ERA or popupType == ButtonPopupTypes.BUTTONPOPUP_LEAGUE_SPLASH or popupType == ButtonPopupTypes.BUTTONPOPUP_LEAGUE_PROJECT_COMPLETED or popupType == ButtonPopupTypes.BUTTONPOPUP_GREAT_PERSON_REWARD or popupType == ButtonPopupTypes.BUTTONPOPUP_GOLDEN_AGE_REWARD or popupType == ButtonPopupTypes.BUTTONPOPUP_WHOS_WINNING or popupType == ButtonPopupTypes.BUTTONPOPUP_GREAT_WORK_COMPLETED_ACTIVE_PLAYER or popupType == ButtonPopupTypes.BUTTONPOPUP_CITY_STATE_GREETING or popupType == ButtonPopupTypes.BUTTONPOPUP_CITY_STATE_MESSAGE or popupType == ButtonPopupTypes.BUTTONPOPUP_MINOR_GOLD_GIFT or popupType == ButtonPopupTypes.BUTTONPOPUP_NATURAL_WONDER_REWARD or popupType == ButtonPopupTypes.BUTTONPOPUP_GOODY_HUT_REWARD or popupType == ButtonPopupTypes.BUTTONPOPUP_ADVISOR_COUNSEL or popupType == ButtonPopupTypes.BUTTONPOPUP_EVENT or popupType == ButtonPopupTypes.BUTTONPOPUP_WONDER_COMPLETED_ACTIVE_PLAYER or popupType == ButtonPopupTypes.BUTTONPOPUP_WONDER_COMPLETED or popupType == ButtonPopupTypes.BUTTONPOPUP_TEXT or popupType == ButtonPopupTypes.BUTTONPOPUP_DECLAREWARMOVE or popupType == ButtonPopupTypes.BUTTONPOPUP_DECLAREWARRANGESTRIKE or popupType == ButtonPopupTypes.BUTTONPOPUP_DECLAREWAR_PLUNDER_TRADE_ROUTE then
 		SC_LAST_POPUPS_HANDLED = SC_LAST_POPUPS_HANDLED + 1
 		SC_MarkPopupProcessed(popupType)
