@@ -466,17 +466,94 @@ def convoy_scenario() -> dict[str, Any]:
 
 
 def production_scenario() -> dict[str, Any]:
-    targets = {"land_frontline": 9, "siege": 3, "air": 3, "naval_screen": 2}
-    roster = {"land_frontline": 4, "siege": 2, "air": 6, "naval_screen": 3, "missile": 13}
-    priority = {"land_frontline": 65, "siege": 50, "air": 30, "naval_screen": 20}
-    deficits = {name: targets[name] - roster[name] for name in targets}
-    candidates = {
-        name: priority[name] + deficit * 100 / targets[name]
-        for name, deficit in deficits.items()
-        if deficit > 0
+    city_count = 22
+    package_count = max(2, min(6, math.ceil(math.sqrt(city_count))))
+    carrier_target = max(1, math.ceil(package_count / 2))
+    targets = {
+        "rapid_capture": max(2, math.ceil(package_count * 0.8)),
+        "line_frontline": max(2, package_count),
+        "siege": max(2, math.ceil(package_count * 0.8)),
+        "air_superiority": max(2, math.ceil(package_count * 0.6)),
+        "carrier_air": max(2, carrier_target * 2),
+        "air_strike": max(2, package_count),
+        "naval_screen": max(2, package_count),
+        "naval_fire": max(1, math.ceil(package_count * 0.8)),
+        "fleet_carrier": carrier_target,
+        "strategic_submarine": max(1, math.ceil(package_count / 3)),
+        "missile_strike": max(2, package_count),
     }
-    selected_need = max(candidates, key=candidates.get)
-    assert selected_need == "land_frontline", (selected_need, candidates)
+    roster = {
+        "rapid_capture": 29,
+        "line_frontline": 0,
+        "siege": 4,
+        "air_superiority": 1,
+        "carrier_air": 6,
+        "air_strike": 0,
+        "naval_screen": 1,
+        "naval_fire": 1,
+        "fleet_carrier": 1,
+        "strategic_submarine": 1,
+        "missile_strike": 0,
+    }
+    priority = {
+        "rapid_capture": 82, "line_frontline": 48, "siege": 78,
+        "air_superiority": 92, "carrier_air": 100, "air_strike": 98,
+        "naval_screen": 70, "naval_fire": 86, "fleet_carrier": 82,
+        "strategic_submarine": 74, "missile_strike": 64,
+    }
+    sea_needs = {"naval_screen", "naval_fire", "fleet_carrier", "strategic_submarine"}
+    reservations = Counter()
+    assignments: list[str] = []
+    city_domains = ["coastal", "inland"] * 8
+    for city_domain in city_domains:
+        candidates: dict[str, float] = {}
+        for name, target in targets.items():
+            deficit = target - roster[name] - reservations[name]
+            if deficit <= 0 or (name in sea_needs and city_domain != "coastal"):
+                continue
+            score = priority[name] + deficit * 100 / target
+            if roster[name] + reservations[name] <= 0:
+                score += 45
+            candidates[name] = score
+        if not candidates:
+            continue
+        selected_need = max(candidates, key=candidates.get)
+        reservations[selected_need] += 1
+        assignments.append(selected_need)
+
+    assert assignments[0] == "air_strike", assignments
+    assert len(set(assignments)) >= 6, assignments
+    assert assignments.count("rapid_capture") == 0, assignments
+    assert any(need in sea_needs for need in assignments), assignments
+    assert "missile_strike" in assignments, assignments
+    joint_arm_orders = sum(
+        need.startswith("air_") or need in sea_needs or need in {"carrier_air", "missile_strike"}
+        for need in assignments
+    )
+    assert joint_arm_orders / len(assignments) >= 0.65, assignments
+
+    replacement_roster = dict(targets)
+    replacement_roster["carrier_air"] = 0
+    replacement_roster["strategic_submarine"] = 0
+    replacement_reservations = Counter()
+    replacements: list[str] = []
+    for _ in range(8):
+        candidates = {}
+        for name, target in targets.items():
+            deficit = target - replacement_roster[name] - replacement_reservations[name]
+            if deficit <= 0:
+                continue
+            score = priority[name] + deficit * 100 / target
+            if replacement_roster[name] + replacement_reservations[name] <= 0:
+                score += 45
+            candidates[name] = score
+        if not candidates:
+            break
+        selected_need = max(candidates, key=candidates.get)
+        replacement_reservations[selected_need] += 1
+        replacements.append(selected_need)
+    assert "carrier_air" in replacements, replacements
+    assert "strategic_submarine" in replacements, replacements
 
     cities = ["CAPITAL", "PORT", "FRONTIER"]
     unique_reservations: set[str] = set()
@@ -494,9 +571,11 @@ def production_scenario() -> dict[str, Any]:
     assert military_slots == 2
     assert not append_process
     return {
-        "scenario": "wartime_roster_and_queue",
-        "selected_need": selected_need,
-        "deficits": deficits,
+        "scenario": "strike_package_production_and_queue",
+        "package_count": package_count,
+        "assignments": assignments,
+        "carrier_group_replacements": replacements,
+        "categories_filled": sorted(set(assignments)),
         "unique_wonder_assignments": wonder_assignments,
         "military_slots": military_slots,
         "process_appended_to_nonempty_queue": append_process,
@@ -609,7 +688,7 @@ def main() -> int:
         print(f"PASS combat: destroyed {combat['enemy_units_destroyed']}/{combat['enemy_units_total']}, city captured={combat['city_captured']}, losses={combat['friendly_losses']}, accidental wars={combat['accidental_wars']}")
         production = result["production_regression"]
         print("PASS convoy: zero-threat release, threat-scaled escort, civilian retreat")
-        print(f"PASS production: need={production['selected_need']}, unique wonder assignments={production['unique_wonder_assignments']}, military queue slots={production['military_slots']}")
+        print(f"PASS production: packages={production['package_count']}, arms={','.join(production['categories_filled'])}, unique wonder assignments={production['unique_wonder_assignments']}, military queue slots={production['military_slots']}")
         print("Doctrine distribution:")
         for doctrine_class, count in audit["classes"].items():
             print(f"  {doctrine_class}: {count}")

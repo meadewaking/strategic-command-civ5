@@ -25,10 +25,8 @@ SC_CONFIG.AutoCityProduction = true
 SC_CONFIG.MinCityQueueLength = 3
 SC_CONFIG.TargetCityQueueLength = 3
 SC_CONFIG.WarQueueMilitarySlotsPerCity = 2
-SC_CONFIG.WarFrontlineUnitsPerCity = 3
-SC_CONFIG.WarSiegeUnitsPerCity = 1
-SC_CONFIG.WarAirUnitsPerCity = 1
-SC_CONFIG.WarNavalUnitsPerCoastalCity = 2
+SC_CONFIG.MaxStrikePackages = 6
+SC_CONFIG.MissingStrikeArmBonus = 45
 SC_CONFIG.MilitaryNeedScoreBonus = 1200
 
 -- 本土防御：远程单位优先射击可达战争目标。
@@ -53,6 +51,8 @@ SC_CONFIG.CaptureReadyAdjacentFirePenalty = 4200
 SC_CONFIG.ProtectedAssetThreatRadius = 6
 SC_CONFIG.OperationEnemyScreenRadius = 4
 SC_CONFIG.OperationFocusRadius = 5
+SC_CONFIG.DecapitationReadinessThreshold = 0.55
+SC_CONFIG.DecapitationCapitalBonus = 900
 SC_CONFIG.ProtectedAssetRetreatDamage = 20
 SC_CONFIG.RetreatThreatRadius = 5
 SC_CONFIG.RetreatSearchRadius = 4

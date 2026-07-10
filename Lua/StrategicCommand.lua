@@ -3,7 +3,7 @@
 
 include("StrategicCommand_Config.lua")
 
-local SC_VERSION = "1.34"
+local SC_VERSION = "1.35"
 local SC_LOAD_TURN = -1
 local SC_SAVE_DATA = nil
 local SC_TAKEOVER_SAVE_KEY = "SC_TAKEOVER_REMAINING"
@@ -26,6 +26,7 @@ SC_PROTECTED_ASSET_CACHE_THIS_TURN = {}
 SC_UNIT_CAPABILITY_CACHE = {}
 SC_OPERATION_TARGET_CACHE_THIS_TURN = {}
 SC_OPERATION_FOCUS_THIS_TURN = {}
+SC_DECAPITATION_FOCUS_THIS_TURN = {}
 SC_RETREAT_THREAT_CACHE_THIS_TURN = {}
 SC_SEA_THREAT_CACHE_THIS_TURN = {}
 SC_MILITARY_ROSTER_CACHE_THIS_TURN = {}
@@ -1244,6 +1245,21 @@ function SC_GetOperationFocusPlot(player, unit, unitInfo, profile)
 	if cached ~= nil then
 		return cached.plot
 	end
+	local decapitationPlot = nil
+	local strikeReadiness = 0
+	if SC_GetDecapitationFocusPlot ~= nil then
+		decapitationPlot, strikeReadiness = SC_GetDecapitationFocusPlot(player)
+	end
+	local readinessThreshold = SC_GetConfig("DecapitationReadinessThreshold", 0.55)
+	local decapitationAllowed = decapitationPlot ~= nil and strikeReadiness >= readinessThreshold
+	if decapitationAllowed and operationDomain == "sea" then
+		decapitationAllowed = SC_IsWaterOrCoastalStrategicPlot ~= nil and SC_IsWaterOrCoastalStrategicPlot(decapitationPlot)
+	end
+	if decapitationAllowed then
+		SC_OPERATION_FOCUS_THIS_TURN[cacheKey] = { plot = decapitationPlot, score = 5000 + math.floor(strikeReadiness * 1000) }
+		SC_Debug("operationFocus decapitation domain="..operationDomain.." class="..tostring(profile.doctrineClass).." target="..SC_GetPlotDebug(decapitationPlot).." readiness="..tostring(math.floor(strikeReadiness * 100)).."%")
+		return decapitationPlot
+	end
 	local team = Teams[player:GetTeam()]
 	local unitPlot = unit ~= nil and unit:GetPlot() or nil
 	if team == nil then
@@ -2245,12 +2261,6 @@ function SC_GetUnitEraRank(unitInfo)
 	if unitInfo == nil then
 		return -1
 	end
-	if unitInfo.Era ~= nil then
-		local directRank = SC_GetEraRank(unitInfo.Era)
-		if directRank >= 0 then
-			return directRank
-		end
-	end
 	local techType = unitInfo.PrereqTech
 	if techType ~= nil and techType ~= "" and GameInfo ~= nil and GameInfo.Technologies ~= nil then
 		local techInfo = GameInfo.Technologies[techType]
@@ -2289,12 +2299,17 @@ end
 
 function SC_GetMilitaryRosterSnapshot(player)
 	local snapshot = {
-		frontline = 0,
+		rapidCapture = 0,
+		lineFrontline = 0,
 		siege = 0,
-		air = 0,
-		naval = 0,
+		airSuperiority = 0,
+		carrierAir = 0,
+		airStrike = 0,
 		navalScreen = 0,
-		missile = 0,
+		navalFire = 0,
+		fleetCarrier = 0,
+		strategicSubmarine = 0,
+		missileStrike = 0,
 		useful = 0,
 		coastalCities = 0
 	}
@@ -2319,21 +2334,32 @@ function SC_GetMilitaryRosterSnapshot(player)
 				local role = SC_GetUnitRole(unit, unitInfo)
 				local profile = SC_GetUnitCapabilityProfile(unit, unitInfo, role)
 				local class = profile.doctrineClass
-				if class == "missile_strike" or class == "strategic_nuclear" then
-					snapshot.missile = snapshot.missile + 1
+				if class == "missile_strike" then
+					snapshot.missileStrike = snapshot.missileStrike + 1
 				elseif (profile.power or 0) > 0 then
 					snapshot.useful = snapshot.useful + 1
-					if profile.domain == "DOMAIN_AIR" then
-						snapshot.air = snapshot.air + 1
-					elseif profile.domain == "DOMAIN_SEA" then
-						snapshot.naval = snapshot.naval + 1
-						if SC_IsScreenDoctrineClass(class) or class == "attack_submarine" or class == "naval_assault" then
-							snapshot.navalScreen = snapshot.navalScreen + 1
-						end
+					if class == "air_superiority" then
+						snapshot.airSuperiority = snapshot.airSuperiority + 1
+					elseif class == "carrier_multirole" then
+						snapshot.carrierAir = snapshot.carrierAir + 1
+					elseif class == "strike_aircraft" then
+						snapshot.airStrike = snapshot.airStrike + 1
+					elseif class == "fleet_carrier" then
+						snapshot.fleetCarrier = snapshot.fleetCarrier + 1
+					elseif class == "ballistic_submarine" then
+						snapshot.strategicSubmarine = snapshot.strategicSubmarine + 1
+					elseif class == "surface_fire_support" or class == "arsenal_capital" then
+						snapshot.navalFire = snapshot.navalFire + 1
+					elseif profile.domain == "DOMAIN_SEA" and (SC_IsScreenDoctrineClass(class) or class == "attack_submarine" or class == "naval_assault") then
+						snapshot.navalScreen = snapshot.navalScreen + 1
 					elseif class == "siege_artillery" or class == "ranged_support" then
 						snapshot.siege = snapshot.siege + 1
 					elseif profile.canCapture then
-						snapshot.frontline = snapshot.frontline + 1
+						if class == "mobile_breakthrough" or class == "gunship" or class == "airborne_raider" or class == "super_heavy" or class == "recon_raider" then
+							snapshot.rapidCapture = snapshot.rapidCapture + 1
+						else
+							snapshot.lineFrontline = snapshot.lineFrontline + 1
+						end
 					end
 				end
 			end
@@ -2343,42 +2369,132 @@ function SC_GetMilitaryRosterSnapshot(player)
 	return snapshot
 end
 
-function SC_GetMilitaryProductionNeed(player, city, atWar, reservedOrders)
+function SC_GetStrikePackageTargets(player, snapshot)
+	local cityCount = math.max(SC_GetSafeNumber(function() return player:GetNumCities() end, 1), 1)
+	local packageCount = math.max(2, math.min(SC_GetConfig("MaxStrikePackages", 6), math.ceil(math.sqrt(cityCount))))
+	local hasCoast = snapshot ~= nil and snapshot.coastalCities > 0
+	local carrierTarget = hasCoast and math.max(1, math.ceil(packageCount / 2)) or 0
+	return {
+		rapid_capture = math.max(2, math.ceil(packageCount * 0.8)),
+		line_frontline = math.max(2, packageCount),
+		siege = math.max(2, math.ceil(packageCount * 0.8)),
+		air_superiority = math.max(2, math.ceil(packageCount * 0.6)),
+		carrier_air = hasCoast and math.max(2, carrierTarget * 2) or 0,
+		air_strike = math.max(2, packageCount),
+		naval_screen = hasCoast and math.max(2, packageCount) or 0,
+		naval_fire = hasCoast and math.max(1, math.ceil(packageCount * 0.8)) or 0,
+		fleet_carrier = carrierTarget,
+		strategic_submarine = hasCoast and math.max(1, math.ceil(packageCount / 3)) or 0,
+		missile_strike = math.max(2, packageCount),
+		packageCount = packageCount
+	}
+end
+
+function SC_GetProductionNeedForUnitInfo(unitInfo)
+	if unitInfo == nil then
+		return nil
+	end
+	local role = SC_GetUnitRole(nil, unitInfo)
+	local profile = SC_GetUnitCapabilityProfile(nil, unitInfo, role)
+	local class = profile.doctrineClass
+	if class == "missile_strike" then
+		return "missile_strike"
+	elseif class == "air_superiority" then
+		return "air_superiority"
+	elseif class == "carrier_multirole" then
+		return "carrier_air"
+	elseif class == "strike_aircraft" then
+		return "air_strike"
+	elseif class == "fleet_carrier" then
+		return "fleet_carrier"
+	elseif class == "ballistic_submarine" then
+		return "strategic_submarine"
+	elseif class == "surface_fire_support" or class == "arsenal_capital" then
+		return "naval_fire"
+	elseif profile.domain == "DOMAIN_SEA" and (SC_IsScreenDoctrineClass(class) or class == "attack_submarine" or class == "naval_assault") then
+		return "naval_screen"
+	elseif class == "siege_artillery" or class == "ranged_support" then
+		return "siege"
+	elseif profile.canCapture and (class == "mobile_breakthrough" or class == "gunship" or class == "airborne_raider" or class == "super_heavy" or class == "recon_raider") then
+		return "rapid_capture"
+	elseif profile.domain == "DOMAIN_LAND" and profile.canCapture then
+		return "line_frontline"
+	end
+	return nil
+end
+
+function SC_GetProductionNeedDomain(needKey)
+	if needKey == "air_superiority" or needKey == "carrier_air" or needKey == "air_strike" or needKey == "missile_strike" then
+		return "air"
+	end
+	if needKey == "naval_screen" or needKey == "naval_fire" or needKey == "fleet_carrier" or needKey == "strategic_submarine" then
+		return "sea"
+	end
+	return "land"
+end
+
+function SC_GetMilitaryProductionNeed(player, city, atWar, reservedOrders, excludedNeeds)
 	if player == nil or not atWar then
 		return nil, 0, "peace"
 	end
-	local cityCount = math.max(SC_GetSafeNumber(function() return player:GetNumCities() end, 1), 1)
 	local snapshot = SC_GetMilitaryRosterSnapshot(player)
-	local targets = {
-		land_frontline = math.max(cityCount * SC_GetConfig("WarFrontlineUnitsPerCity", 3), 6),
-		siege = math.max(cityCount * SC_GetConfig("WarSiegeUnitsPerCity", 1), 2),
-		air = math.max(cityCount * SC_GetConfig("WarAirUnitsPerCity", 1), 2),
-		naval_screen = math.max(snapshot.coastalCities * SC_GetConfig("WarNavalUnitsPerCoastalCity", 2), snapshot.coastalCities > 0 and 2 or 0)
-	}
+	local targets = SC_GetStrikePackageTargets(player, snapshot)
 	local current = {
-		land_frontline = snapshot.frontline,
+		rapid_capture = snapshot.rapidCapture,
+		line_frontline = snapshot.lineFrontline,
 		siege = snapshot.siege,
-		air = snapshot.air,
-		naval_screen = snapshot.navalScreen
+		air_superiority = snapshot.airSuperiority,
+		carrier_air = snapshot.carrierAir,
+		air_strike = snapshot.airStrike,
+		naval_screen = snapshot.navalScreen,
+		naval_fire = snapshot.navalFire,
+		fleet_carrier = snapshot.fleetCarrier,
+		strategic_submarine = snapshot.strategicSubmarine,
+		missile_strike = snapshot.missileStrike
 	}
-	local priority = { land_frontline = 65, siege = 50, air = 30, naval_screen = 20 }
+	local priority = {
+		rapid_capture = 82, line_frontline = 48, siege = 78,
+		air_superiority = 92, carrier_air = 100, air_strike = 98,
+		naval_screen = 70, naval_fire = 86, fleet_carrier = 82,
+		strategic_submarine = 74, missile_strike = 64
+	}
 	local warProfile = SC_GetConfig("WarProfile", "ADVANCE")
 	local production = SC_GetConfig("ProductionProfile", "BUILDINGS")
 	if warProfile == "NAVAL" or production == "AIRSEA" then
-		priority.naval_screen = 80
-		priority.air = 55
+		priority.naval_screen = 108
+		priority.naval_fire = 112
+		priority.fleet_carrier = 106
+		priority.strategic_submarine = 98
+		priority.air_superiority = 102
+		priority.carrier_air = 108
+		priority.air_strike = 104
 	elseif warProfile == "ASSAULT" then
-		priority.land_frontline = 90
-		priority.siege = 70
+		priority.rapid_capture = 105
+		priority.siege = 98
+		priority.air_strike = 104
+	elseif warProfile == "DEFENSE" then
+		priority.line_frontline = 100
+		priority.air_superiority = 106
+		priority.naval_screen = 90
 	end
+	local cityCoastal = false
+	pcall(function() cityCoastal = city ~= nil and city:IsCoastal() end)
 	local bestNeed = nil
 	local bestDeficit = 0
 	local bestScore = -999999
-	for _, need in ipairs({"land_frontline", "siege", "air", "naval_screen"}) do
+	local scoreParts = {}
+	local needs = {"rapid_capture", "line_frontline", "siege", "air_superiority", "carrier_air", "air_strike", "naval_screen", "naval_fire", "fleet_carrier", "strategic_submarine", "missile_strike"}
+	for _, need in ipairs(needs) do
 		local queued = reservedOrders ~= nil and SC_DBNumber(reservedOrders["NEED:"..need], 0) or 0
 		local deficit = targets[need] - current[need] - queued
-		if deficit > 0 then
-			local score = priority[need] + deficit * 100 / math.max(targets[need], 1)
+		local domainAllowed = SC_GetProductionNeedDomain(need) ~= "sea" or cityCoastal
+		local excluded = excludedNeeds ~= nil and excludedNeeds[need]
+		local score = priority[need] + deficit * 100 / math.max(targets[need], 1)
+		if current[need] + queued <= 0 and targets[need] > 0 then
+			score = score + SC_GetConfig("MissingStrikeArmBonus", 45)
+		end
+		table.insert(scoreParts, need..":"..tostring(current[need]).."+"..tostring(queued).."/"..tostring(targets[need]).."@"..tostring(math.floor(score)))
+		if deficit > 0 and domainAllowed and not excluded then
 			if score > bestScore then
 				bestScore = score
 				bestNeed = need
@@ -2386,11 +2502,7 @@ function SC_GetMilitaryProductionNeed(player, city, atWar, reservedOrders)
 			end
 		end
 	end
-	local debugText = "frontline="..tostring(snapshot.frontline).."/"..tostring(targets.land_frontline)..
-		",siege="..tostring(snapshot.siege).."/"..tostring(targets.siege)..
-		",air="..tostring(snapshot.air).."/"..tostring(targets.air)..
-		",navalScreen="..tostring(snapshot.navalScreen).."/"..tostring(targets.naval_screen)..
-		",missile="..tostring(snapshot.missile)..",useful="..tostring(snapshot.useful)
+	local debugText = "packages="..tostring(targets.packageCount).." choice="..tostring(bestNeed).." score="..tostring(math.floor(bestScore)).." arms="..table.concat(scoreParts, ",").." useful="..tostring(snapshot.useful)
 	return bestNeed, bestDeficit, debugText
 end
 
@@ -2401,17 +2513,104 @@ function SC_UnitMatchesProductionNeed(unitInfo, needKey)
 	local role = SC_GetUnitRole(nil, unitInfo)
 	local profile = SC_GetUnitCapabilityProfile(nil, unitInfo, role)
 	local class = profile.doctrineClass
-	if needKey == "land_frontline" then
-		return profile.domain == "DOMAIN_LAND" and profile.canCapture
-			and class ~= "siege_artillery" and class ~= "ranged_support"
-	elseif needKey == "siege" then
-		return profile.domain == "DOMAIN_LAND" and (class == "siege_artillery" or class == "ranged_support")
-	elseif needKey == "air" then
-		return profile.domain == "DOMAIN_AIR" and class ~= "missile_strike" and class ~= "strategic_nuclear"
-	elseif needKey == "naval_screen" then
-		return profile.domain == "DOMAIN_SEA" and (SC_IsScreenDoctrineClass(class) or class == "attack_submarine" or class == "naval_assault")
+	return SC_GetProductionNeedForUnitInfo(unitInfo) == needKey
+end
+
+function SC_GetStrikePackageReadiness(player)
+	local snapshot = SC_GetMilitaryRosterSnapshot(player)
+	local targets = SC_GetStrikePackageTargets(player, snapshot)
+	local current = {
+		rapid_capture = snapshot.rapidCapture,
+		siege = snapshot.siege,
+		air_superiority = snapshot.airSuperiority,
+		carrier_air = snapshot.carrierAir,
+		air_strike = snapshot.airStrike,
+		naval_screen = snapshot.navalScreen,
+		naval_fire = snapshot.navalFire,
+		fleet_carrier = snapshot.fleetCarrier,
+		strategic_submarine = snapshot.strategicSubmarine
+	}
+	local weights = {
+		rapid_capture = 1.2, siege = 1.0,
+		air_superiority = 0.8, carrier_air = 0.8, air_strike = 1.2,
+		naval_screen = 0.7, naval_fire = 0.9, fleet_carrier = 0.6,
+		strategic_submarine = 0.4
+	}
+	local totalWeight = 0
+	local readyWeight = 0
+	local parts = {}
+	for _, need in ipairs({"rapid_capture", "siege", "air_superiority", "carrier_air", "air_strike", "naval_screen", "naval_fire", "fleet_carrier", "strategic_submarine"}) do
+		local target = targets[need] or 0
+		if target > 0 then
+			local weight = weights[need] or 1
+			local ratio = math.min((current[need] or 0) / target, 1)
+			totalWeight = totalWeight + weight
+			readyWeight = readyWeight + ratio * weight
+			table.insert(parts, need..":"..tostring(current[need] or 0).."/"..tostring(target))
+		end
 	end
-	return false
+	local readiness = totalWeight > 0 and readyWeight / totalWeight or 0
+	return readiness, "packages="..tostring(targets.packageCount).." readiness="..tostring(math.floor(readiness * 100)).."% "..table.concat(parts, ",")
+end
+
+function SC_GetDecapitationFocusPlot(player)
+	if player == nil then
+		return nil, 0, "player=nil"
+	end
+	local playerID = SC_GetSafeNumber(function() return player:GetID() end, -1)
+	local cacheKey = tostring(playerID)
+	local cached = SC_DECAPITATION_FOCUS_THIS_TURN[cacheKey]
+	if cached ~= nil then
+		return cached.plot, cached.readiness, cached.debugText
+	end
+	local readiness, readinessDebug = SC_GetStrikePackageReadiness(player)
+	local team = Teams[player:GetTeam()]
+	local anchorPlot = nil
+	pcall(function()
+		local capital = player:GetCapitalCity()
+		if capital ~= nil then anchorPlot = capital:Plot() end
+	end)
+	if anchorPlot == nil then
+		for city in player:Cities() do
+			anchorPlot = city:Plot()
+			break
+		end
+	end
+	local bestPlot = nil
+	local bestScore = -999999
+	local bestReason = "none"
+	if team ~= nil then
+		for _, otherPlayer in pairs(Players) do
+			if otherPlayer ~= nil and otherPlayer:IsAlive() and otherPlayer:GetID() ~= playerID and team:IsAtWar(otherPlayer:GetTeam()) then
+				for city in otherPlayer:Cities() do
+					local cityPlot = city:Plot()
+					if cityPlot ~= nil then
+						local distance = 0
+						if anchorPlot ~= nil then
+							distance = Map.PlotDistance(anchorPlot:GetX(), anchorPlot:GetY(), cityPlot:GetX(), cityPlot:GetY())
+						end
+						local damage, maxHP, damageRatio = SC_GetCityDamageInfo(city)
+						local score = 1800 - distance * 9 + damage * 4
+						local capital = SC_GetSafeNumber(function() return city:IsCapital() and 1 or 0 end, 0) > 0
+						if capital then score = score + SC_GetConfig("DecapitationCapitalBonus", 900) end
+						if damageRatio >= 0.72 then score = score + 650 elseif damageRatio >= 0.45 then score = score + 320 end
+						if SC_IsCoastalAssaultPlot(cityPlot) then score = score + 120 end
+						if score > bestScore then
+							bestScore = score
+							bestPlot = cityPlot
+							bestReason = "capital="..SC_BoolText(capital).." dist="..tostring(distance).." damage="..tostring(damage).."/"..tostring(maxHP)
+						end
+					end
+				end
+			end
+		end
+	end
+	local debugText = readinessDebug.." target="..SC_GetPlotDebug(bestPlot).." score="..tostring(bestScore).." "..bestReason
+	SC_DECAPITATION_FOCUS_THIS_TURN[cacheKey] = { plot = bestPlot, readiness = readiness, debugText = debugText }
+	if bestPlot ~= nil then
+		SC_Debug("strikePackage focus "..debugText)
+	end
+	return bestPlot, readiness, debugText
 end
 
 local function SC_GetBestTrainableUnit(city, preferSea, preferAir, reservedOrders, needKey)
@@ -2537,19 +2736,20 @@ local function SC_ShouldBuildMilitary(player, city, atWar, reservedOrders)
 	if needKey ~= nil then
 		return true, needKey, needDeficit, rosterDebug
 	end
-	local cityCount = math.max(SC_GetSafeNumber(function() return player:GetNumCities() end, 1), 1)
 	local militaryCount = SC_GetSafeNumber(function() return player:GetNumMilitaryUnits() end, 0)
-	local targetMilitary = math.max(cityCount * 5, 12)
+	local snapshot = SC_GetMilitaryRosterSnapshot(player)
+	local packageCount = SC_GetStrikePackageTargets(player, snapshot).packageCount
+	local targetMilitary = math.max(packageCount * 8, 12)
 	if SC_GetConfig("Doctrine", "BALANCED") == "WAR" then
-		targetMilitary = math.max(cityCount * 8, 18)
+		targetMilitary = math.max(packageCount * 10, 18)
 	end
 	if production == "MILITARY" or production == "AIRSEA" then
-		targetMilitary = math.max(cityCount * 10, 24)
+		targetMilitary = math.max(packageCount * 12, 24)
 	end
 	if war == "ASSAULT" then
-		targetMilitary = math.max(cityCount * 12, 30)
+		targetMilitary = math.max(packageCount * 11, 30)
 	elseif war == "NAVAL" then
-		targetMilitary = math.max(cityCount * 9, 24)
+		targetMilitary = math.max(packageCount * 10, 24)
 	end
 	if militaryCount < targetMilitary then
 		return true, "balanced", targetMilitary - militaryCount, rosterDebug or "total-force"
@@ -4411,6 +4611,14 @@ function SC_SeedProductionReservations(player)
 				if unique and reserveKey ~= nil then
 					reserved[reserveKey] = true
 				end
+			elseif OrderTypes ~= nil and orderType == OrderTypes.ORDER_TRAIN and data1 ~= nil then
+				local unitInfo = GameInfo.Units[data1]
+				local needKey = SC_GetProductionNeedForUnitInfo(unitInfo)
+				reserved["U:"..tostring(data1)] = true
+				if needKey ~= nil then
+					local needReserveKey = "NEED:"..needKey
+					reserved[needReserveKey] = SC_DBNumber(reserved[needReserveKey], 0) + 1
+				end
 			end
 		end
 	end
@@ -4531,38 +4739,42 @@ local function SC_ChooseCityProduction(player, city, atWar, reservedOrders)
 		local unitReserved = nil
 		local unitRejected = nil
 		local unitEra = nil
-		if militaryNeed == "air" then
-			unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, true, reservedOrders, militaryNeed)
-		elseif militaryNeed == "naval_screen" then
-			if ok and coastal then
-				unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, true, false, reservedOrders, militaryNeed)
+		local attemptedNeeds = {}
+		local attemptParts = {}
+		local selectedNeed = nil
+		local candidateNeed = militaryNeed
+		for attempt = 1, 11, 1 do
+			if candidateNeed == nil then break end
+			attemptedNeeds[candidateNeed] = true
+			local domain = SC_GetProductionNeedDomain(candidateNeed)
+			if domain == "sea" and not (ok and coastal) then
+				table.insert(attemptParts, candidateNeed..":inland")
+			else
+				unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(
+					city,
+					domain == "sea",
+					domain == "air",
+					reservedOrders,
+					candidateNeed)
+				if unitID ~= nil then
+					selectedNeed = candidateNeed
+					break
+				end
+				table.insert(attemptParts, candidateNeed..":no-trainable")
 			end
-		elseif militaryNeed == "land_frontline" or militaryNeed == "siege" then
-			unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, false, reservedOrders, militaryNeed)
-		elseif production == "AIRSEA" then
-			if ok and coastal then
-				unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, true, false, reservedOrders, militaryNeed)
-			end
-			if unitID == nil then
-				unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, true, reservedOrders, militaryNeed)
-			end
+			candidateNeed, needDeficit, rosterDebug = SC_GetMilitaryProductionNeed(player, city, atWar, reservedOrders, attemptedNeeds)
 		end
-		if unitID == nil then
-			unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, militaryNeed == "naval_screen" and ok and coastal, false, reservedOrders, militaryNeed)
-		end
-		if unitID == nil and ok and coastal then
-			unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, false, reservedOrders, militaryNeed)
-		end
+		militaryNeed = selectedNeed or militaryNeed
 		if unitID ~= nil and SC_PushCityOrder(city, OrderTypes.ORDER_TRAIN, unitID) then
 			local unitInfo = GameInfo.Units[unitID]
 			local reserveKey = "U:"..tostring(unitID)
 			if SC_GetConfig("DebugCityProduction", true) then
-				SC_Debug("cityProduction choose city="..tostring(cityName).." category=military item="..tostring(unitInfo and unitInfo.Type or "UNIT").." role="..tostring(unitRole).." score="..tostring(unitScore).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=roster-gap need="..tostring(militaryNeed).." deficit="..tostring(needDeficit).." queuedMilitary="..tostring(queuedMilitary).."/"..tostring(militaryQueueCap).." roster="..tostring(rosterDebug).." queue="..tostring(queueLength))
+				SC_Debug("cityProduction choose city="..tostring(cityName).." category=military item="..tostring(unitInfo and unitInfo.Type or "UNIT").." role="..tostring(unitRole).." score="..tostring(unitScore).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=strike-package need="..tostring(militaryNeed).." deficit="..tostring(needDeficit).." retries="..table.concat(attemptParts, "|").." queuedMilitary="..tostring(queuedMilitary).."/"..tostring(militaryQueueCap).." roster="..tostring(rosterDebug).." queue="..tostring(queueLength))
 			end
 			return unitInfo and unitInfo.Type or "UNIT", reserveKey, militaryNeed
 		end
 		if unitID == nil and SC_GetConfig("DebugCityProduction", true) then
-			SC_Debug("cityProduction military-no-unit city="..tostring(cityName).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=no-viable-modern-unit")
+			SC_Debug("cityProduction military-no-unit city="..tostring(cityName).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=no-viable-strike-package-unit attempted="..table.concat(attemptParts, "|"))
 		end
 	elseif SC_GetConfig("DebugCityProduction", true) then
 		SC_Debug("cityProduction military-skip city="..tostring(cityName).." reason=force-not-needed profile="..tostring(production).." atWar="..SC_BoolText(atWar))
@@ -5339,6 +5551,14 @@ local function SC_ScoreStrategicTarget(player, unit, role, unitPlot, targetPlot,
 			local focusScore = 620 - focusDistance * 80
 			score = score + focusScore
 			SC_AddScoreReason(reasons, "operationFocus", focusScore)
+			if focusDistance == 0 then
+				local _, strikeReadiness = SC_GetDecapitationFocusPlot(player)
+				if strikeReadiness >= SC_GetConfig("DecapitationReadinessThreshold", 0.55) then
+					local decapitationScore = math.floor(420 + strikeReadiness * 380)
+					score = score + decapitationScore
+					SC_AddScoreReason(reasons, "decapitation", decapitationScore)
+				end
+			end
 		end
 	end
 	if enemyCity ~= nil then
@@ -5685,7 +5905,7 @@ function SC_PlotMatchesUnitDomain(unitInfo, plot)
 	return false
 end
 
-local function SC_GetUnitStackLayer(unit)
+function SC_GetUnitStackLayer(unit)
 	if unit == nil then
 		return "unknown"
 	end
@@ -8916,6 +9136,7 @@ local function SC_ResetTakeoverPassCounterForTurn()
 		SC_PROTECTED_ASSET_CACHE_THIS_TURN = {}
 		SC_OPERATION_TARGET_CACHE_THIS_TURN = {}
 		SC_OPERATION_FOCUS_THIS_TURN = {}
+		SC_DECAPITATION_FOCUS_THIS_TURN = {}
 		SC_RETREAT_THREAT_CACHE_THIS_TURN = {}
 		SC_SEA_THREAT_CACHE_THIS_TURN = {}
 		SC_MILITARY_ROSTER_CACHE_THIS_TURN = {}
