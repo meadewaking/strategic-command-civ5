@@ -3,7 +3,7 @@
 
 include("StrategicCommand_Config.lua")
 
-local SC_VERSION = "1.32"
+local SC_VERSION = "1.33"
 local SC_LOAD_TURN = -1
 local SC_SAVE_DATA = nil
 local SC_TAKEOVER_SAVE_KEY = "SC_TAKEOVER_REMAINING"
@@ -60,6 +60,9 @@ local SC_UnitNeedsOrder = nil
 local SC_GetUnitOrderDebug = nil
 local SC_TryDirectTargetedMission = nil
 SC_ProcessNotificationQueue = nil
+SC_TryCloseDiplomacy = nil
+SC_DIPLO_CLOSE_PENDING_TICKS = 0
+SC_DIPLO_CLOSE_PLAYER = -1
 
 pcall(function()
 	SC_LOAD_TURN = Game.GetGameTurn()
@@ -74,6 +77,35 @@ local function SC_GetConfig(key, defaultValue)
 		return SC_CONFIG[key]
 	end
 	return defaultValue
+end
+
+function SC_GetSafeNumber(callback, defaultValue)
+	local ok, value = pcall(callback)
+	if ok and value ~= nil then
+		return value
+	end
+	return defaultValue or 0
+end
+
+function SC_DBNumber(value, defaultValue)
+	if type(value) == "number" then
+		return value
+	end
+	if type(value) == "boolean" then
+		return value and 1 or 0
+	end
+	local parsed = tonumber(value)
+	if parsed ~= nil then
+		return parsed
+	end
+	return defaultValue or 0
+end
+
+function SC_DBFlag(value)
+	if type(value) == "boolean" then
+		return value
+	end
+	return SC_DBNumber(value, 0) ~= 0
 end
 
 function SC_Debug(text)
@@ -575,14 +607,6 @@ local function SC_GetWarSummary(player)
 	return enemies
 end
 
-local function SC_GetSafeNumber(callback, defaultValue)
-	local ok, value = pcall(callback)
-	if ok and value ~= nil then
-		return value
-	end
-	return defaultValue or 0
-end
-
 function SC_GetEnumName(enumTable, value)
 	return SC_GetEnumDebugName(enumTable, value)
 end
@@ -926,7 +950,7 @@ function SC_GetUnitIntrinsicPromotionSummary(unitInfo)
 		rangeChange = 0,
 		intercept = 0,
 		airSweep = false,
-		indirectFire = (unitInfo.RangeAttackIgnoreLOS or 0) > 0,
+		indirectFire = SC_DBFlag(unitInfo.RangeAttackIgnoreLOS),
 		noCapture = false,
 		onlyDefensive = false,
 		ignoreZOC = false,
@@ -948,30 +972,30 @@ function SC_GetUnitIntrinsicPromotionSummary(unitInfo)
 			if promotion ~= nil then
 				local promotionType = promotion.Type or freePromotion.PromotionType or ""
 				summary.moveAfterAttack = summary.moveAfterAttack
-					or (promotion.CanMoveAfterAttacking or 0) > 0
-					or (promotion.Blitz or 0) > 0
-					or (promotion.ExtraAttacks or 0) > 0
-				summary.extraAttacks = summary.extraAttacks + math.max(promotion.ExtraAttacks or 0, 0)
-				summary.mustSetUp = summary.mustSetUp or (promotion.MustSetUpToRangedAttack or 0) > 0
-				summary.dropRange = math.max(summary.dropRange, promotion.DropRange or 0)
-				summary.rangeChange = summary.rangeChange + (promotion.RangeChange or 0)
+					or SC_DBFlag(promotion.CanMoveAfterAttacking)
+					or SC_DBFlag(promotion.Blitz)
+					or SC_DBNumber(promotion.ExtraAttacks, 0) > 0
+				summary.extraAttacks = summary.extraAttacks + math.max(SC_DBNumber(promotion.ExtraAttacks, 0), 0)
+				summary.mustSetUp = summary.mustSetUp or SC_DBFlag(promotion.MustSetUpToRangedAttack)
+				summary.dropRange = math.max(summary.dropRange, SC_DBNumber(promotion.DropRange, 0))
+				summary.rangeChange = summary.rangeChange + SC_DBNumber(promotion.RangeChange, 0)
 				summary.intercept = summary.intercept
-					+ math.max(promotion.InterceptChanceChange or 0, 0)
-					+ math.max(promotion.NumInterceptionChange or 0, 0) * 100
-				summary.airSweep = summary.airSweep or (promotion.AirSweepCapable or 0) > 0
-				summary.indirectFire = summary.indirectFire or (promotion.RangeAttackIgnoreLOS or 0) > 0
-				summary.noCapture = summary.noCapture or (promotion.NoCapture or 0) > 0
-				summary.onlyDefensive = summary.onlyDefensive or (promotion.OnlyDefensive or 0) > 0
-				summary.ignoreZOC = summary.ignoreZOC or (promotion.IgnoreZOC or 0) > 0
+					+ math.max(SC_DBNumber(promotion.InterceptChanceChange, 0), 0)
+					+ math.max(SC_DBNumber(promotion.NumInterceptionChange, 0), 0) * 100
+				summary.airSweep = summary.airSweep or SC_DBFlag(promotion.AirSweepCapable)
+				summary.indirectFire = summary.indirectFire or SC_DBFlag(promotion.RangeAttackIgnoreLOS)
+				summary.noCapture = summary.noCapture or SC_DBFlag(promotion.NoCapture)
+				summary.onlyDefensive = summary.onlyDefensive or SC_DBFlag(promotion.OnlyDefensive)
+				summary.ignoreZOC = summary.ignoreZOC or SC_DBFlag(promotion.IgnoreZOC)
 				summary.ignoreTerrain = summary.ignoreTerrain
-					or (promotion.IgnoreTerrainCost or 0) > 0
-					or (promotion.FlatMovementCost or 0) > 0
-				summary.alwaysHeal = summary.alwaysHeal or (promotion.AlwaysHeal or 0) > 0
-				summary.healOnKill = summary.healOnKill + math.max(promotion.HPHealedIfDestroyEnemy or 0, 0)
-				summary.cityAttack = summary.cityAttack + (promotion.CityAttack or 0)
-				summary.attack = summary.attack + (promotion.AttackMod or 0)
-				summary.defense = summary.defense + (promotion.DefenseMod or 0)
-				summary.cargo = summary.cargo + math.max(promotion.CargoChange or 0, 0)
+					or SC_DBFlag(promotion.IgnoreTerrainCost)
+					or SC_DBFlag(promotion.FlatMovementCost)
+				summary.alwaysHeal = summary.alwaysHeal or SC_DBFlag(promotion.AlwaysHeal)
+				summary.healOnKill = summary.healOnKill + math.max(SC_DBNumber(promotion.HPHealedIfDestroyEnemy, 0), 0)
+				summary.cityAttack = summary.cityAttack + SC_DBNumber(promotion.CityAttack, 0)
+				summary.attack = summary.attack + SC_DBNumber(promotion.AttackMod, 0)
+				summary.defense = summary.defense + SC_DBNumber(promotion.DefenseMod, 0)
+				summary.cargo = summary.cargo + math.max(SC_DBNumber(promotion.CargoChange, 0), 0)
 				summary.carrierAir = summary.carrierAir or SC_TextHas(promotionType, "CARRIER_FIGHTER")
 				summary.carrier = summary.carrier or SC_TextHas(promotionType, "CARRIER_UNIT")
 				summary.missileCarrier = summary.missileCarrier or SC_TextHas(promotionType, "MISSILE_CARRIER")
@@ -999,10 +1023,10 @@ function SC_GetUnitCapabilityProfile(unit, unitInfo, role)
 	local domain = unitInfo.Domain or ""
 	local combatClass = unitInfo.CombatClass or ""
 	local ai = unitInfo.DefaultUnitAI or ""
-	local combat = math.max(unitInfo.Combat or 0, 0)
-	local ranged = math.max(unitInfo.RangedCombat or 0, 0)
-	local range = math.max((unitInfo.Range or 0) + (promotions.rangeChange or 0), 0)
-	local moves = math.max(unitInfo.Moves or 0, 0)
+	local combat = math.max(SC_DBNumber(unitInfo.Combat, 0), 0)
+	local ranged = math.max(SC_DBNumber(unitInfo.RangedCombat, 0), 0)
+	local range = math.max(SC_DBNumber(unitInfo.Range, 0) + SC_DBNumber(promotions.rangeChange, 0), 0)
+	local moves = math.max(SC_DBNumber(unitInfo.Moves, 0), 0)
 	local special = unitInfo.Special or ""
 	local specialCargo = unitInfo.SpecialCargo or ""
 	local domainCargo = unitInfo.DomainCargo or ""
@@ -1027,7 +1051,7 @@ function SC_GetUnitCapabilityProfile(unit, unitInfo, role)
 		if (unitInfo.NukeDamageLevel or 0) > 0 or special == "SPECIALUNIT_NUKE" or ai == "UNITAI_ICBM" then
 			doctrineClass = "strategic_nuclear"
 			phase = 2
-		elseif (unitInfo.Suicide or 0) > 0 or special == "SPECIALUNIT_MISSILE" or ai == "UNITAI_MISSILE_AIR" then
+		elseif SC_DBFlag(unitInfo.Suicide) or special == "SPECIALUNIT_MISSILE" or ai == "UNITAI_MISSILE_AIR" then
 			doctrineClass = "missile_strike"
 			phase = 2
 		elseif combatClass == "UNITCOMBAT_FIGHTER" or ai == "UNITAI_DEFENSE_AIR" then
@@ -1112,7 +1136,7 @@ function SC_GetUnitCapabilityProfile(unit, unitInfo, role)
 		and domain ~= "DOMAIN_HOVER"
 		and not promotions.noCapture
 		and not promotions.onlyDefensive
-		and (unitInfo.Suicide or 0) <= 0
+		and not SC_DBFlag(unitInfo.Suicide)
 		and doctrineClass ~= "fleet_carrier"
 		and doctrineClass ~= "ballistic_submarine"
 	local profile = {
@@ -1144,8 +1168,8 @@ function SC_GetUnitCapabilityProfile(unit, unitInfo, role)
 		defense = promotions.defense,
 		cargo = promotions.cargo,
 		noCapture = promotions.noCapture,
-		suicide = (unitInfo.Suicide or 0) > 0,
-		maxHP = math.max(unitInfo.MaxHitPoints or 100, 1)
+		suicide = SC_DBFlag(unitInfo.Suicide),
+		maxHP = math.max(SC_DBNumber(unitInfo.MaxHitPoints, 100), 1)
 	}
 	SC_UNIT_CAPABILITY_CACHE[unitType] = SC_UNIT_CAPABILITY_CACHE[unitType] or {}
 	SC_UNIT_CAPABILITY_CACHE[unitType].profile = profile
@@ -8069,8 +8093,27 @@ local function SC_HandleEndTurnBlocker(player, atWar, allowNotificationActivatio
 	return handled
 end
 
+function SC_RunCountModule(moduleName, callback)
+	local ok, count, detail = pcall(callback)
+	if not ok then
+		SC_Debug("module error name="..tostring(moduleName).." err="..tostring(count).." recovery=continue")
+		return 0, nil, 1
+	end
+	local normalized = tonumber(count)
+	if normalized == nil then
+		SC_Debug("module invalid-result name="..tostring(moduleName).." value="..tostring(count).." recovery=zero")
+		normalized = 0
+	end
+	return normalized, detail, 0
+end
+
 local function SC_BuildAutomationResults(player, atWar)
-	SC_Debug("doctrineRoster "..SC_GetDoctrineRosterDebug(player))
+	local rosterOK, roster = pcall(function() return SC_GetDoctrineRosterDebug(player) end)
+	if rosterOK then
+		SC_Debug("doctrineRoster "..tostring(roster))
+	else
+		SC_Debug("module error name=doctrineRoster err="..tostring(roster).." recovery=continue")
+	end
 	local results = {
 		cityOrders = 0,
 		ideologies = 0,
@@ -8092,14 +8135,16 @@ local function SC_BuildAutomationResults(player, atWar)
 		leagues = 0,
 		blockers = 0,
 		popups = 0,
-		diplo = 0
+		diplo = 0,
+		moduleErrors = rosterOK and 0 or 1
 	}
 	local cityDetails = {}
 	local maxSweeps = SC_GetConfig("MaxTakeoverInnerSweeps", 3)
 	for sweep = 1, maxSweeps, 1 do
 		SC_Debug("sweep begin index="..tostring(sweep).." blocker="..SC_GetBlockingDebug(player))
 		local before = results.cityOrders + results.ideologies + results.research + results.policies + results.upgrades + results.promotions + results.heals + results.captureFinishers + results.defenseActions + results.cityStrikes + results.transportEscort + results.strategicMoves + results.stackedMoves + results.idlePosture + results.tradeRoutes + results.finalOrders + results.leagues + results.blockers
-		local cityOrders, details = SC_AutomateCities(player, atWar)
+		local cityOrders, details, moduleErrors = SC_RunCountModule("cities", function() return SC_AutomateCities(player, atWar) end)
+		results.moduleErrors = results.moduleErrors + moduleErrors
 		results.cityOrders = results.cityOrders + cityOrders
 		if details ~= nil then
 			for _, detail in ipairs(details) do
@@ -8108,25 +8153,64 @@ local function SC_BuildAutomationResults(player, atWar)
 				end
 			end
 		end
-		results.ideologies = results.ideologies + SC_AutomateIdeology(player)
-		results.research = results.research + SC_AutomateResearch(player)
-		results.policies = results.policies + SC_AutomatePolicy(player)
-		results.upgrades = results.upgrades + SC_AutomateUnitUpgrades(player)
-		results.promotions = results.promotions + SC_AutomateUnitPromotions(player)
-		results.heals = results.heals + SC_AutomateDamagedUnitHealing(player)
-		results.captureFinishers = results.captureFinishers + SC_AutomateCityCaptureFinishers(player, atWar)
-		results.transportEscort = results.transportEscort + SC_AutomateTransportEscort(player, atWar)
-		results.defenseActions = results.defenseActions + SC_AutomateAirSuperiority(player, atWar) + SC_AutomateLocalDefense(player, atWar)
-		results.cityStrikes = results.cityStrikes + SC_AutomateCityRangedStrike(player, atWar)
-		results.strategicMoves = results.strategicMoves + SC_AutomateStrategicMovement(player, atWar)
-		results.stackedMoves = results.stackedMoves + SC_AutomateStackedUnits(player)
-		results.idlePosture = results.idlePosture + SC_AutomateIdlePosture(player)
-		results.tradeRoutes = results.tradeRoutes + SC_AutomateTradeRoutes(player)
-		results.finalOrders = results.finalOrders + SC_AutomateFinalUnitOrders(player, atWar)
+		local count = 0
+		local _ = nil
+		count, _, moduleErrors = SC_RunCountModule("ideology", function() return SC_AutomateIdeology(player) end)
+		results.ideologies = results.ideologies + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("research", function() return SC_AutomateResearch(player) end)
+		results.research = results.research + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("policy", function() return SC_AutomatePolicy(player) end)
+		results.policies = results.policies + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("upgrade", function() return SC_AutomateUnitUpgrades(player) end)
+		results.upgrades = results.upgrades + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("promotion", function() return SC_AutomateUnitPromotions(player) end)
+		results.promotions = results.promotions + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("healing", function() return SC_AutomateDamagedUnitHealing(player) end)
+		results.heals = results.heals + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("captureFinishers", function() return SC_AutomateCityCaptureFinishers(player, atWar) end)
+		results.captureFinishers = results.captureFinishers + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("transportEscort", function() return SC_AutomateTransportEscort(player, atWar) end)
+		results.transportEscort = results.transportEscort + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("airSuperiority", function() return SC_AutomateAirSuperiority(player, atWar) end)
+		results.defenseActions = results.defenseActions + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("localDefense", function() return SC_AutomateLocalDefense(player, atWar) end)
+		results.defenseActions = results.defenseActions + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("cityStrike", function() return SC_AutomateCityRangedStrike(player, atWar) end)
+		results.cityStrikes = results.cityStrikes + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("strategicMovement", function() return SC_AutomateStrategicMovement(player, atWar) end)
+		results.strategicMoves = results.strategicMoves + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("stackedUnits", function() return SC_AutomateStackedUnits(player) end)
+		results.stackedMoves = results.stackedMoves + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("idlePosture", function() return SC_AutomateIdlePosture(player) end)
+		results.idlePosture = results.idlePosture + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("tradeRoutes", function() return SC_AutomateTradeRoutes(player) end)
+		results.tradeRoutes = results.tradeRoutes + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
+		count, _, moduleErrors = SC_RunCountModule("finalOrders", function() return SC_AutomateFinalUnitOrders(player, atWar) end)
+		results.finalOrders = results.finalOrders + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
 		if sweep == 1 then
-			results.leagues = results.leagues + SC_AutomateLeagues(player)
+			count, _, moduleErrors = SC_RunCountModule("leagues", function() return SC_AutomateLeagues(player) end)
+			results.leagues = results.leagues + count
+			results.moduleErrors = results.moduleErrors + moduleErrors
 		end
-		results.blockers = results.blockers + SC_HandleEndTurnBlocker(player, atWar)
+		count, _, moduleErrors = SC_RunCountModule("endTurnBlocker", function() return SC_HandleEndTurnBlocker(player, atWar) end)
+		results.blockers = results.blockers + count
+		results.moduleErrors = results.moduleErrors + moduleErrors
 		local after = results.cityOrders + results.ideologies + results.research + results.policies + results.upgrades + results.promotions + results.heals + results.captureFinishers + results.defenseActions + results.cityStrikes + results.transportEscort + results.strategicMoves + results.stackedMoves + results.idlePosture + results.tradeRoutes + results.finalOrders + results.leagues + results.blockers
 		local blocking = SC_GetSafeNumber(function() return player:GetEndTurnBlockingType() end, -999)
 		SC_Debug("sweep end index="..tostring(sweep)..
@@ -8144,6 +8228,7 @@ local function SC_BuildAutomationResults(player, atWar)
 			" finalOrders="..tostring(results.finalOrders)..
 			" leagues="..tostring(results.leagues)..
 			" blockers="..tostring(results.blockers)..
+			" moduleErrors="..tostring(results.moduleErrors)..
 			" blockerNow="..SC_GetEnumName(EndTurnBlockingTypes, blocking))
 		if after == before and (EndTurnBlockingTypes == nil or blocking == EndTurnBlockingTypes.NO_ENDTURN_BLOCKING_TYPE) then
 			break
@@ -8655,6 +8740,10 @@ local function SC_OnAutomationUpdate(deltaSeconds)
 	end
 	SC_AUTO_RETRY_RUNNING = true
 	local ok, err = pcall(function()
+		if SC_DIPLO_CLOSE_PENDING_TICKS > 0 and SC_TryCloseDiplomacy ~= nil then
+			SC_DIPLO_CLOSE_PENDING_TICKS = SC_DIPLO_CLOSE_PENDING_TICKS - 1
+			SC_TryCloseDiplomacy("retry:"..tostring(SC_DIPLO_CLOSE_PENDING_TICKS))
+		end
 		local player = SC_GetActiveHuman()
 		if player == nil or not player:IsTurnActive() then
 			return
@@ -8747,20 +8836,48 @@ local function SC_RunTakeoverPass(player, reason, allowEndTurn)
 		" atWar="..SC_BoolText(atWar)..
 		" allowEndTurn="..SC_BoolText(allowEndTurn)..
 		" blocker="..SC_GetBlockingDebug(player))
-	SC_AuditPlayerUnits(player, "pass-begin:"..tostring(reason), SC_GetConfig("DebugUnitAuditFullPassBegin", true))
-	local notificationHandled = 0
-	if SC_ProcessNotificationQueue ~= nil then
-		notificationHandled = SC_ProcessNotificationQueue(player, "pass:"..tostring(reason))
+	local auditOK, auditErr = pcall(function()
+		SC_AuditPlayerUnits(player, "pass-begin:"..tostring(reason), SC_GetConfig("DebugUnitAuditFullPassBegin", true))
+	end)
+	if not auditOK then
+		SC_Debug("module error name=passBeginAudit err="..tostring(auditErr).." recovery=continue")
 	end
-	local results, cityDetails = SC_BuildAutomationResults(player, atWar)
+	local notificationHandled = 0
+	local _ = nil
+	if SC_ProcessNotificationQueue ~= nil then
+		local notificationErrors = 0
+		notificationHandled, _, notificationErrors = SC_RunCountModule("notifications", function()
+			return SC_ProcessNotificationQueue(player, "pass:"..tostring(reason))
+		end)
+		if notificationErrors > 0 then
+			SC_Debug("pass notification recovery errors="..tostring(notificationErrors))
+		end
+	end
+	local buildOK, results, cityDetails = pcall(function() return SC_BuildAutomationResults(player, atWar) end)
+	if not buildOK then
+		SC_Debug("module error name=automationSweep err="..tostring(results).." recovery=blocker-fallback")
+		results = { moduleErrors = 1 }
+		cityDetails = {}
+		local fallbackCount, _, fallbackErrors = SC_RunCountModule("passFallbackBlocker", function()
+			return SC_HandleEndTurnBlocker(player, atWar)
+		end)
+		results.blockers = fallbackCount
+		results.moduleErrors = results.moduleErrors + fallbackErrors
+	end
 	if results ~= nil then
 		results.notifications = notificationHandled
 	end
 	if allowEndTurn then
-		SC_TryAutoEndTurn(player)
+		local autoEndOK, autoEndErr = pcall(function() SC_TryAutoEndTurn(player) end)
+		if not autoEndOK then
+			SC_Debug("module error name=autoEndTurn err="..tostring(autoEndErr).." recovery=retry-tick")
+		end
 	end
 	results = results or {}
-	SC_AuditPlayerUnits(player, "pass-end:"..tostring(reason), false)
+	auditOK, auditErr = pcall(function() SC_AuditPlayerUnits(player, "pass-end:"..tostring(reason), false) end)
+	if not auditOK then
+		SC_Debug("module error name=passEndAudit err="..tostring(auditErr).." recovery=continue")
+	end
 	SC_Debug("pass end reason="..tostring(reason)..
 		" city="..tostring(results.cityOrders or 0)..
 		" research="..tostring(results.research or 0)..
@@ -8776,6 +8893,7 @@ local function SC_RunTakeoverPass(player, reason, allowEndTurn)
 		" notifications="..tostring(results.notifications or 0)..
 		" popups="..tostring(results.popups or 0)..
 		" diplo="..tostring(results.diplo or 0)..
+		" moduleErrors="..tostring(results.moduleErrors or 0)..
 		" blocker="..SC_GetBlockingDebug(player))
 	return results, cityDetails, atWar
 end
@@ -9760,6 +9878,22 @@ end
 -- Queue only here; normal takeover passes and retry ticks process the queue.
 Events.NotificationAdded.Add(SC_OnNotificationAdded)
 
+SC_TryCloseDiplomacy = function(reason)
+	local rootBefore = "?"
+	local rootAfter = "?"
+	pcall(function() rootBefore = SC_BoolText(UI.GetLeaderHeadRootUp()) end)
+	local rootOK, rootErr = pcall(function() UI.SetLeaderHeadRootUp(false) end)
+	local leaveOK, leaveErr = pcall(function() UI.RequestLeaveLeader() end)
+	pcall(function() rootAfter = SC_BoolText(UI.GetLeaderHeadRootUp()) end)
+	SC_Debug("diplomacy close reason="..tostring(reason)..
+		" player=P"..tostring(SC_DIPLO_CLOSE_PLAYER)..
+		" root="..tostring(rootBefore).."->"..tostring(rootAfter)..
+		" rootOK="..SC_BoolText(rootOK)..
+		" leaveOK="..SC_BoolText(leaveOK)..
+		" err="..tostring(rootErr or leaveErr))
+	return rootOK or leaveOK
+end
+
 local function SC_OnAILeaderMessage(iPlayer, iDiploUIState, szLeaderMessage, iAnimationAction, iData1)
 	if SC_IsDemonstrationLoggingActive ~= nil and SC_IsDemonstrationLoggingActive() then
 		SC_DemoLog("diplomacy", "event=AILeaderMessage player=P"..tostring(iPlayer)..
@@ -9776,8 +9910,9 @@ local function SC_OnAILeaderMessage(iPlayer, iDiploUIState, szLeaderMessage, iAn
 		return
 	end
 	SC_LAST_DIPLO_HANDLED = SC_LAST_DIPLO_HANDLED + 1
-	pcall(function() UI.SetLeaderHeadRootUp(false) end)
-	pcall(function() UI.RequestLeaveLeader() end)
+	SC_DIPLO_CLOSE_PLAYER = iPlayer
+	SC_DIPLO_CLOSE_PENDING_TICKS = 8
+	SC_TryCloseDiplomacy("leader-message:state="..tostring(iDiploUIState))
 end
 Events.AILeaderMessage.Add(SC_OnAILeaderMessage)
 

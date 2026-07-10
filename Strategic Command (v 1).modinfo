@@ -26,9 +26,9 @@
   </Dependencies>
   <Files>
     <File md5="7CB9D2957B269DDEBCB90215C4ED086A" import="1">Lua/StrategicCommand_Config.lua</File>
-    <File md5="070AD0F31C102E02F4C82EA11AEFA447" import="1">Lua/StrategicCommand.lua</File>
+    <File md5="11C60D7B33561A4D2BF8C7DAAD981F0D" import="1">Lua/StrategicCommand.lua</File>
     <File md5="E11C124E11C669A03347406D2C17F882" import="1">Lua/StrategicCommand.xml</File>
-    <File md5="497B868600F44F1452380FE331AD44BA" import="0">Docs/README.txt</File>
+    <File md5="CEEA7B55336F9BB27FFFD9D1A19A6B9A" import="0">Docs/README.txt</File>
   </Files>
   <EntryPoints>
     <EntryPoint type="InGameUIAddin" file="Lua/StrategicCommand.xml">
