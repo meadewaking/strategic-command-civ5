@@ -25,10 +25,10 @@
     <Dlc id="6DA07636-4123-4018-B643-6575B4EC336B" minversion="0" maxversion="999" />
   </Dependencies>
   <Files>
-    <File md5="7CB9D2957B269DDEBCB90215C4ED086A" import="1">Lua/StrategicCommand_Config.lua</File>
-    <File md5="11C60D7B33561A4D2BF8C7DAAD981F0D" import="1">Lua/StrategicCommand.lua</File>
+    <File md5="9D48A01AF2C8FEBD7856C30EDB8949DE" import="1">Lua/StrategicCommand_Config.lua</File>
+    <File md5="0BD3CA43E8560E774A9E4D22C1F15635" import="1">Lua/StrategicCommand.lua</File>
     <File md5="E11C124E11C669A03347406D2C17F882" import="1">Lua/StrategicCommand.xml</File>
-    <File md5="CEEA7B55336F9BB27FFFD9D1A19A6B9A" import="0">Docs/README.txt</File>
+    <File md5="BB21727E1C8DC0EC4820737B64A93585" import="0">Docs/README.txt</File>
   </Files>
   <EntryPoints>
     <EntryPoint type="InGameUIAddin" file="Lua/StrategicCommand.xml">

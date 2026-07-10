@@ -439,19 +439,67 @@ def future_carrier_group_scenario(catalog: UnitCatalog) -> dict[str, Any]:
 
 
 def convoy_scenario() -> dict[str, Any]:
-    def advance(escorts: int, threats: int) -> int:
-        required = 2 if threats > 0 else 1
-        return 3 if escorts >= required else 0
+    def decision(mission_class: str, escorts: int, threats: int) -> str:
+        if mission_class == "trade":
+            return "release-trade"
+        if threats <= 0:
+            return "release-no-threat"
+        required = 2 if threats >= 2 else 1
+        if escorts < required:
+            return f"hold:{escorts}/{required}"
+        return "advance-enemy-coast" if mission_class == "combat" else "retreat-friendly-coast"
 
-    exposed_advance = advance(1, 1)
-    screened_advance = advance(2, 1)
-    assert exposed_advance == 0
-    assert screened_advance == 3
+    assert decision("combat", 0, 0) == "release-no-threat"
+    assert decision("trade", 0, 3) == "release-trade"
+    assert decision("combat", 1, 1) == "advance-enemy-coast"
+    assert decision("combat", 1, 2) == "hold:1/2"
+    assert decision("worker", 2, 2) == "retreat-friendly-coast"
     return {
         "scenario": "ocean_transport_convoy",
-        "under_threat_with_one_escort": "hold",
-        "under_threat_with_two_escorts": f"advance:{screened_advance}",
+        "no_threat_without_escort": "release",
+        "trade_ship": "trade-route-managed",
+        "one_threat_with_one_escort": "advance",
+        "severe_threat_with_one_escort": "hold",
+        "civilian_under_severe_threat": "retreat-friendly-coast",
         "transport_exposed": False,
+    }
+
+
+def production_scenario() -> dict[str, Any]:
+    targets = {"land_frontline": 9, "siege": 3, "air": 3, "naval_screen": 2}
+    roster = {"land_frontline": 4, "siege": 2, "air": 6, "naval_screen": 3, "missile": 13}
+    priority = {"land_frontline": 65, "siege": 50, "air": 30, "naval_screen": 20}
+    deficits = {name: targets[name] - roster[name] for name in targets}
+    candidates = {
+        name: priority[name] + deficit * 100 / targets[name]
+        for name, deficit in deficits.items()
+        if deficit > 0
+    }
+    selected_need = max(candidates, key=candidates.get)
+    assert selected_need == "land_frontline", (selected_need, candidates)
+
+    cities = ["CAPITAL", "PORT", "FRONTIER"]
+    unique_reservations: set[str] = set()
+    wonder_assignments = 0
+    for _city in cities:
+        key = "X:B:BIG_BEN"
+        if key not in unique_reservations:
+            unique_reservations.add(key)
+            wonder_assignments += 1
+    assert wonder_assignments == 1
+
+    queue = ["UNIT", "UNIT", "BUILDING"]
+    military_slots = sum(order == "UNIT" for order in queue)
+    append_process = len(queue) == 0
+    assert military_slots == 2
+    assert not append_process
+    return {
+        "scenario": "wartime_roster_and_queue",
+        "selected_need": selected_need,
+        "deficits": deficits,
+        "unique_wonder_assignments": wonder_assignments,
+        "military_slots": military_slots,
+        "process_appended_to_nonempty_queue": append_process,
     }
 
 
@@ -541,6 +589,7 @@ def main() -> int:
         "catalog_audit": audit_catalog(catalog),
         "combat_regression": future_carrier_group_scenario(catalog),
         "convoy_regression": convoy_scenario(),
+        "production_regression": production_scenario(),
     }
     if args.log is not None:
         if not args.log.exists():
@@ -558,7 +607,9 @@ def main() -> int:
         combat = result["combat_regression"]
         print(f"PASS catalog: {audit['units']} units, {audit['military_units']} military, {len(audit['classes'])} doctrine classes")
         print(f"PASS combat: destroyed {combat['enemy_units_destroyed']}/{combat['enemy_units_total']}, city captured={combat['city_captured']}, losses={combat['friendly_losses']}, accidental wars={combat['accidental_wars']}")
-        print("PASS convoy: one escort holds under threat; two escorts advance")
+        production = result["production_regression"]
+        print("PASS convoy: zero-threat release, threat-scaled escort, civilian retreat")
+        print(f"PASS production: need={production['selected_need']}, unique wonder assignments={production['unique_wonder_assignments']}, military queue slots={production['military_slots']}")
         print("Doctrine distribution:")
         for doctrine_class, count in audit["classes"].items():
             print(f"  {doctrine_class}: {count}")

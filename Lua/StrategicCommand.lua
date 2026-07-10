@@ -3,7 +3,7 @@
 
 include("StrategicCommand_Config.lua")
 
-local SC_VERSION = "1.33"
+local SC_VERSION = "1.34"
 local SC_LOAD_TURN = -1
 local SC_SAVE_DATA = nil
 local SC_TAKEOVER_SAVE_KEY = "SC_TAKEOVER_REMAINING"
@@ -28,10 +28,12 @@ SC_OPERATION_TARGET_CACHE_THIS_TURN = {}
 SC_OPERATION_FOCUS_THIS_TURN = {}
 SC_RETREAT_THREAT_CACHE_THIS_TURN = {}
 SC_SEA_THREAT_CACHE_THIS_TURN = {}
+SC_MILITARY_ROSTER_CACHE_THIS_TURN = {}
 SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN = {}
 SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
 SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN = {}
+SC_TRANSPORT_RELEASE_LOGGED_THIS_TURN = {}
 SC_DIRECT_PUSH_FAILED_THIS_TURN = {}
 SC_HEAL_FAILED_THIS_TURN = {}
 SC_RANGE_FAILED_THIS_TURN = {}
@@ -2285,7 +2287,134 @@ function SC_GetOutdatedUnitRejectReason(unitInfo, playerEraRank)
 	return nil
 end
 
-local function SC_GetBestTrainableUnit(city, preferSea, preferAir, reservedOrders)
+function SC_GetMilitaryRosterSnapshot(player)
+	local snapshot = {
+		frontline = 0,
+		siege = 0,
+		air = 0,
+		naval = 0,
+		navalScreen = 0,
+		missile = 0,
+		useful = 0,
+		coastalCities = 0
+	}
+	if player == nil then
+		return snapshot
+	end
+	local cacheKey = tostring(SC_GetSafeNumber(function() return player:GetID() end, 0))
+	if SC_MILITARY_ROSTER_CACHE_THIS_TURN[cacheKey] ~= nil then
+		return SC_MILITARY_ROSTER_CACHE_THIS_TURN[cacheKey]
+	end
+	for city in player:Cities() do
+		local coastal = false
+		pcall(function() coastal = city:IsCoastal() end)
+		if coastal then
+			snapshot.coastalCities = snapshot.coastalCities + 1
+		end
+	end
+	for unit in player:Units() do
+		if unit ~= nil and not unit:IsDead() then
+			local unitInfo = SC_GetUnitInfo(unit)
+			if unitInfo ~= nil then
+				local role = SC_GetUnitRole(unit, unitInfo)
+				local profile = SC_GetUnitCapabilityProfile(unit, unitInfo, role)
+				local class = profile.doctrineClass
+				if class == "missile_strike" or class == "strategic_nuclear" then
+					snapshot.missile = snapshot.missile + 1
+				elseif (profile.power or 0) > 0 then
+					snapshot.useful = snapshot.useful + 1
+					if profile.domain == "DOMAIN_AIR" then
+						snapshot.air = snapshot.air + 1
+					elseif profile.domain == "DOMAIN_SEA" then
+						snapshot.naval = snapshot.naval + 1
+						if SC_IsScreenDoctrineClass(class) or class == "attack_submarine" or class == "naval_assault" then
+							snapshot.navalScreen = snapshot.navalScreen + 1
+						end
+					elseif class == "siege_artillery" or class == "ranged_support" then
+						snapshot.siege = snapshot.siege + 1
+					elseif profile.canCapture then
+						snapshot.frontline = snapshot.frontline + 1
+					end
+				end
+			end
+		end
+	end
+	SC_MILITARY_ROSTER_CACHE_THIS_TURN[cacheKey] = snapshot
+	return snapshot
+end
+
+function SC_GetMilitaryProductionNeed(player, city, atWar, reservedOrders)
+	if player == nil or not atWar then
+		return nil, 0, "peace"
+	end
+	local cityCount = math.max(SC_GetSafeNumber(function() return player:GetNumCities() end, 1), 1)
+	local snapshot = SC_GetMilitaryRosterSnapshot(player)
+	local targets = {
+		land_frontline = math.max(cityCount * SC_GetConfig("WarFrontlineUnitsPerCity", 3), 6),
+		siege = math.max(cityCount * SC_GetConfig("WarSiegeUnitsPerCity", 1), 2),
+		air = math.max(cityCount * SC_GetConfig("WarAirUnitsPerCity", 1), 2),
+		naval_screen = math.max(snapshot.coastalCities * SC_GetConfig("WarNavalUnitsPerCoastalCity", 2), snapshot.coastalCities > 0 and 2 or 0)
+	}
+	local current = {
+		land_frontline = snapshot.frontline,
+		siege = snapshot.siege,
+		air = snapshot.air,
+		naval_screen = snapshot.navalScreen
+	}
+	local priority = { land_frontline = 65, siege = 50, air = 30, naval_screen = 20 }
+	local warProfile = SC_GetConfig("WarProfile", "ADVANCE")
+	local production = SC_GetConfig("ProductionProfile", "BUILDINGS")
+	if warProfile == "NAVAL" or production == "AIRSEA" then
+		priority.naval_screen = 80
+		priority.air = 55
+	elseif warProfile == "ASSAULT" then
+		priority.land_frontline = 90
+		priority.siege = 70
+	end
+	local bestNeed = nil
+	local bestDeficit = 0
+	local bestScore = -999999
+	for _, need in ipairs({"land_frontline", "siege", "air", "naval_screen"}) do
+		local queued = reservedOrders ~= nil and SC_DBNumber(reservedOrders["NEED:"..need], 0) or 0
+		local deficit = targets[need] - current[need] - queued
+		if deficit > 0 then
+			local score = priority[need] + deficit * 100 / math.max(targets[need], 1)
+			if score > bestScore then
+				bestScore = score
+				bestNeed = need
+				bestDeficit = deficit
+			end
+		end
+	end
+	local debugText = "frontline="..tostring(snapshot.frontline).."/"..tostring(targets.land_frontline)..
+		",siege="..tostring(snapshot.siege).."/"..tostring(targets.siege)..
+		",air="..tostring(snapshot.air).."/"..tostring(targets.air)..
+		",navalScreen="..tostring(snapshot.navalScreen).."/"..tostring(targets.naval_screen)..
+		",missile="..tostring(snapshot.missile)..",useful="..tostring(snapshot.useful)
+	return bestNeed, bestDeficit, debugText
+end
+
+function SC_UnitMatchesProductionNeed(unitInfo, needKey)
+	if unitInfo == nil or needKey == nil or needKey == "balanced" then
+		return true
+	end
+	local role = SC_GetUnitRole(nil, unitInfo)
+	local profile = SC_GetUnitCapabilityProfile(nil, unitInfo, role)
+	local class = profile.doctrineClass
+	if needKey == "land_frontline" then
+		return profile.domain == "DOMAIN_LAND" and profile.canCapture
+			and class ~= "siege_artillery" and class ~= "ranged_support"
+	elseif needKey == "siege" then
+		return profile.domain == "DOMAIN_LAND" and (class == "siege_artillery" or class == "ranged_support")
+	elseif needKey == "air" then
+		return profile.domain == "DOMAIN_AIR" and class ~= "missile_strike" and class ~= "strategic_nuclear"
+	elseif needKey == "naval_screen" then
+		return profile.domain == "DOMAIN_SEA" and (SC_IsScreenDoctrineClass(class) or class == "attack_submarine" or class == "naval_assault")
+	end
+	return false
+end
+
+local function SC_GetBestTrainableUnit(city, preferSea, preferAir, reservedOrders, needKey)
 	local bestUnitID = nil
 	local bestScore = -1
 	local bestRole = nil
@@ -2319,6 +2448,13 @@ local function SC_GetBestTrainableUnit(city, preferSea, preferAir, reservedOrder
 						local unitEraRank = SC_GetUnitEraRank(unitInfo)
 						local power = SC_GetUnitPowerScore(unitInfo)
 						local score = power * 2.2 + rangedCombat * 0.7 + math.max(cost, 0) / 10 + (unitInfo.Range or 0) * 18 + (unitInfo.Moves or 0) * 5 + math.max(unitEraRank, 0) * 35
+						if needKey ~= nil then
+							if SC_UnitMatchesProductionNeed(unitInfo, needKey) then
+								score = score + SC_GetConfig("MilitaryNeedScoreBonus", 1200)
+							else
+								score = -999999
+							end
+						end
 						if reservedOrders ~= nil and reservedOrders[reserveKey] then
 							reservedCount = reservedCount + 1
 							score = score - SC_GetConfig("RepeatedUnitReservationPenalty", 15)
@@ -2391,11 +2527,15 @@ local function SC_GetBestTrainableUnit(city, preferSea, preferAir, reservedOrder
 	return bestUnitID, bestScore, candidateCount, bestRole, reservedCount, rejectedOutdated, playerEraRank
 end
 
-local function SC_ShouldBuildMilitary(player, city, atWar)
+local function SC_ShouldBuildMilitary(player, city, atWar, reservedOrders)
 	local production = SC_GetConfig("ProductionProfile", "BUILDINGS")
 	local war = SC_GetConfig("WarProfile", "ADVANCE")
 	if not atWar and production ~= "MILITARY" and production ~= "AIRSEA" and war ~= "ASSAULT" then
-		return false
+		return false, nil, 0, "peace-profile"
+	end
+	local needKey, needDeficit, rosterDebug = SC_GetMilitaryProductionNeed(player, city, atWar, reservedOrders)
+	if needKey ~= nil then
+		return true, needKey, needDeficit, rosterDebug
 	end
 	local cityCount = math.max(SC_GetSafeNumber(function() return player:GetNumCities() end, 1), 1)
 	local militaryCount = SC_GetSafeNumber(function() return player:GetNumMilitaryUnits() end, 0)
@@ -2411,7 +2551,10 @@ local function SC_ShouldBuildMilitary(player, city, atWar)
 	elseif war == "NAVAL" then
 		targetMilitary = math.max(cityCount * 9, 24)
 	end
-	return militaryCount < targetMilitary
+	if militaryCount < targetMilitary then
+		return true, "balanced", targetMilitary - militaryCount, rosterDebug or "total-force"
+	end
+	return false, nil, 0, rosterDebug or "force-sufficient"
 end
 
 local function SC_ChooseCityProduction(player, city, atWar)
@@ -4234,16 +4377,74 @@ local function SC_GetWantedBuildingWeights(player, city, atWar)
 	return weights
 end
 
+function SC_GetBuildingReservationKey(city, building)
+	if city == nil or building == nil then
+		return nil, false
+	end
+	local buildingClass = nil
+	pcall(function() buildingClass = GameInfo.BuildingClasses[building.BuildingClass] end)
+	local unique = buildingClass ~= nil and (
+		SC_DBNumber(buildingClass.MaxGlobalInstances, -1) == 1
+		or SC_DBNumber(buildingClass.MaxPlayerInstances, -1) == 1
+		or SC_DBNumber(buildingClass.MaxTeamInstances, -1) == 1)
+	if unique then
+		return "X:B:"..tostring(building.ID), true
+	end
+	local cityID = SC_GetSafeNumber(function() return city:GetID() end, -1)
+	return "C:"..tostring(cityID)..":B:"..tostring(building.ID), false
+end
+
+function SC_SeedProductionReservations(player)
+	local reserved = {}
+	if player == nil then
+		return reserved
+	end
+	for city in player:Cities() do
+		local queueLength = SC_GetSafeNumber(function() return city:GetOrderQueueLength() end, 0)
+		for index = 0, queueLength - 1, 1 do
+			local orderType = nil
+			local data1 = nil
+			pcall(function() orderType, data1 = city:GetOrderFromQueue(index) end)
+			if OrderTypes ~= nil and orderType == OrderTypes.ORDER_CONSTRUCT and data1 ~= nil then
+				local building = GameInfo.Buildings[data1]
+				local reserveKey, unique = SC_GetBuildingReservationKey(city, building)
+				if unique and reserveKey ~= nil then
+					reserved[reserveKey] = true
+				end
+			end
+		end
+	end
+	return reserved
+end
+
+function SC_CountCityQueuedTrainOrders(city)
+	if city == nil then
+		return 0
+	end
+	local queueLength = SC_GetSafeNumber(function() return city:GetOrderQueueLength() end, 0)
+	local count = 0
+	for index = 0, queueLength - 1, 1 do
+		local orderType = nil
+		pcall(function() orderType = city:GetOrderFromQueue(index) end)
+		if OrderTypes ~= nil and orderType == OrderTypes.ORDER_TRAIN then
+			count = count + 1
+		end
+	end
+	return count
+end
+
 local function SC_GetBestConstructibleBuilding(player, city, atWar, reservedOrders)
 	local bestID = nil
 	local bestScore = -999999
 	local bestIsWonder = false
+	local bestReserveKey = nil
+	local bestIsUnique = false
 	local candidateCount = 0
 	local reservedCount = 0
 	local wanted = SC_GetWantedBuildingWeights(player, city, atWar)
 	local production = SC_GetConfig("ProductionProfile", "BUILDINGS")
 	for building in GameInfo.Buildings() do
-		local reserveKey = "B:"..tostring(building.ID)
+		local reserveKey, isUnique = SC_GetBuildingReservationKey(city, building)
 		if reservedOrders ~= nil and reservedOrders[reserveKey] then
 			reservedCount = reservedCount + 1
 		elseif SC_CityCanConstruct(city, building.ID) then
@@ -4273,10 +4474,12 @@ local function SC_GetBestConstructibleBuilding(player, city, atWar, reservedOrde
 				bestScore = score
 				bestID = building.ID
 				bestIsWonder = isWonder
+				bestReserveKey = reserveKey
+				bestIsUnique = isUnique
 			end
 		end
 	end
-	return bestID, bestScore, candidateCount, bestIsWonder, reservedCount
+	return bestID, bestScore, candidateCount, bestIsWonder, reservedCount, bestReserveKey, bestIsUnique
 end
 
 local function SC_ChooseCityProduction(player, city, atWar, reservedOrders)
@@ -4307,7 +4510,18 @@ local function SC_ChooseCityProduction(player, city, atWar, reservedOrders)
 	end
 	
 	local production = SC_GetConfig("ProductionProfile", "BUILDINGS")
-	local buildMilitary = SC_ShouldBuildMilitary(player, city, atWar)
+	local buildMilitary, militaryNeed, needDeficit, rosterDebug = SC_ShouldBuildMilitary(player, city, atWar, reservedOrders)
+	local queuedMilitary = SC_CountCityQueuedTrainOrders(city)
+	local militaryQueueCap = SC_GetConfig("WarQueueMilitarySlotsPerCity", 2)
+	if production == "MILITARY" or production == "AIRSEA" then
+		militaryQueueCap = SC_GetConfig("TargetCityQueueLength", 5)
+	end
+	if buildMilitary and queuedMilitary >= militaryQueueCap then
+		buildMilitary = false
+		if SC_GetConfig("DebugCityProduction", true) then
+			SC_Debug("cityProduction military-defer city="..tostring(cityName).." reason=queue-quota queuedMilitary="..tostring(queuedMilitary).."/"..tostring(militaryQueueCap).." need="..tostring(militaryNeed).." roster="..tostring(rosterDebug))
+		end
+	end
 	if buildMilitary then
 		local ok, coastal = pcall(function() return city:IsCoastal() end)
 		local unitID = nil
@@ -4317,27 +4531,35 @@ local function SC_ChooseCityProduction(player, city, atWar, reservedOrders)
 		local unitReserved = nil
 		local unitRejected = nil
 		local unitEra = nil
-		if production == "AIRSEA" then
+		if militaryNeed == "air" then
+			unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, true, reservedOrders, militaryNeed)
+		elseif militaryNeed == "naval_screen" then
 			if ok and coastal then
-				unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, true, false, reservedOrders)
+				unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, true, false, reservedOrders, militaryNeed)
+			end
+		elseif militaryNeed == "land_frontline" or militaryNeed == "siege" then
+			unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, false, reservedOrders, militaryNeed)
+		elseif production == "AIRSEA" then
+			if ok and coastal then
+				unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, true, false, reservedOrders, militaryNeed)
 			end
 			if unitID == nil then
-				unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, true, reservedOrders)
+				unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, true, reservedOrders, militaryNeed)
 			end
 		end
 		if unitID == nil then
-			unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, ok and coastal, false, reservedOrders)
+			unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, militaryNeed == "naval_screen" and ok and coastal, false, reservedOrders, militaryNeed)
 		end
 		if unitID == nil and ok and coastal then
-			unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, false, reservedOrders)
+			unitID, unitScore, unitCandidates, unitRole, unitReserved, unitRejected, unitEra = SC_GetBestTrainableUnit(city, false, false, reservedOrders, militaryNeed)
 		end
 		if unitID ~= nil and SC_PushCityOrder(city, OrderTypes.ORDER_TRAIN, unitID) then
 			local unitInfo = GameInfo.Units[unitID]
 			local reserveKey = "U:"..tostring(unitID)
 			if SC_GetConfig("DebugCityProduction", true) then
-				SC_Debug("cityProduction choose city="..tostring(cityName).." category=military item="..tostring(unitInfo and unitInfo.Type or "UNIT").." role="..tostring(unitRole).." score="..tostring(unitScore).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=military-target queue="..tostring(queueLength))
+				SC_Debug("cityProduction choose city="..tostring(cityName).." category=military item="..tostring(unitInfo and unitInfo.Type or "UNIT").." role="..tostring(unitRole).." score="..tostring(unitScore).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=roster-gap need="..tostring(militaryNeed).." deficit="..tostring(needDeficit).." queuedMilitary="..tostring(queuedMilitary).."/"..tostring(militaryQueueCap).." roster="..tostring(rosterDebug).." queue="..tostring(queueLength))
 			end
-			return unitInfo and unitInfo.Type or "UNIT", reserveKey
+			return unitInfo and unitInfo.Type or "UNIT", reserveKey, militaryNeed
 		end
 		if unitID == nil and SC_GetConfig("DebugCityProduction", true) then
 			SC_Debug("cityProduction military-no-unit city="..tostring(cityName).." candidates="..tostring(unitCandidates).." reserved="..tostring(unitReserved).." rejectedOutdated="..tostring(unitRejected).." playerEra="..tostring(unitEra).." reason=no-viable-modern-unit")
@@ -4346,12 +4568,12 @@ local function SC_ChooseCityProduction(player, city, atWar, reservedOrders)
 		SC_Debug("cityProduction military-skip city="..tostring(cityName).." reason=force-not-needed profile="..tostring(production).." atWar="..SC_BoolText(atWar))
 	end
 	
-	local buildingID, buildingScore, buildingCandidates, buildingWonder, buildingReserved = SC_GetBestConstructibleBuilding(player, city, atWar, reservedOrders)
+	local buildingID, buildingScore, buildingCandidates, buildingWonder, buildingReserved, buildingReserveKey, buildingUnique = SC_GetBestConstructibleBuilding(player, city, atWar, reservedOrders)
 	if buildingID ~= nil and SC_PushCityOrder(city, OrderTypes.ORDER_CONSTRUCT, buildingID) then
 		local buildingInfo = GameInfo.Buildings[buildingID]
-		local reserveKey = "B:"..tostring(buildingID)
+		local reserveKey = buildingReserveKey
 		if SC_GetConfig("DebugCityProduction", true) then
-			SC_Debug("cityProduction choose city="..tostring(cityName).." category=building item="..tostring(buildingInfo and buildingInfo.Type or "BUILDING").." score="..tostring(buildingScore).." candidates="..tostring(buildingCandidates).." reserved="..tostring(buildingReserved).." wonder="..SC_BoolText(buildingWonder).." queue="..tostring(queueLength))
+			SC_Debug("cityProduction choose city="..tostring(cityName).." category=building item="..tostring(buildingInfo and buildingInfo.Type or "BUILDING").." score="..tostring(buildingScore).." candidates="..tostring(buildingCandidates).." reserved="..tostring(buildingReserved).." wonder="..SC_BoolText(buildingWonder).." unique="..SC_BoolText(buildingUnique).." reserveKey="..tostring(reserveKey).." queue="..tostring(queueLength))
 		end
 		return buildingInfo and buildingInfo.Type or "BUILDING", reserveKey
 	end
@@ -4377,6 +4599,12 @@ local function SC_ChooseCityProduction(player, city, atWar, reservedOrders)
 	end
 	
 	local processType = "PROCESS_WEALTH"
+	if queueLength > 0 then
+		if SC_GetConfig("DebugCityProduction", true) then
+			SC_Debug("cityProduction process-defer city="..tostring(cityName).." reason=queue-has-orders queue="..tostring(queueLength))
+		end
+		return nil
+	end
 	if (SC_GetConfig("Doctrine", "BALANCED") == "SCIENCE" or SC_GetConfig("EconomyProfile", "BALANCED") == "SCIENCE") and SC_GetSafeNumber(function() return player:CalculateGoldRate() end, 0) >= 0 then
 		processType = "PROCESS_RESEARCH"
 	end
@@ -4400,20 +4628,24 @@ local function SC_AutomateCities(player, atWar)
 		return changed, details
 	end
 	local targetQueue = SC_GetConfig("TargetCityQueueLength", SC_GetConfig("MinCityQueueLength", 1))
+	local reservedOrders = SC_SeedProductionReservations(player)
 	for city in player:Cities() do
 		local safety = 0
-		local reservedOrders = {}
 		while city ~= nil and safety < targetQueue do
 			local queueLength = SC_GetSafeNumber(function() return city:GetOrderQueueLength() end, 0)
 			if queueLength >= targetQueue then
 				break
 			end
-			local productionType, reserveKey = SC_ChooseCityProduction(player, city, atWar, reservedOrders)
+			local productionType, reserveKey, needKey = SC_ChooseCityProduction(player, city, atWar, reservedOrders)
 			if productionType == nil then
 				break
 			end
 			if reserveKey ~= nil then
 				reservedOrders[reserveKey] = true
+			end
+			if needKey ~= nil then
+				local needReserveKey = "NEED:"..tostring(needKey)
+				reservedOrders[needReserveKey] = SC_DBNumber(reservedOrders[needReserveKey], 0) + 1
 			end
 			changed = changed + 1
 			if #details < 10 then
@@ -5557,6 +5789,12 @@ function SC_MoveCandidateIsUsable(player, unit, unitInfo, sourcePlot, plot, laye
 		SC_BumpMoveReject(stats, "hostile")
 		return false, nil
 	end
+	local impassable = false
+	pcall(function() impassable = plot:IsImpassable() end)
+	if impassable then
+		SC_BumpMoveReject(stats, "blocked")
+		return false, nil
+	end
 	local domainMatches = SC_PlotMatchesUnitDomain(unitInfo, plot)
 	if SC_IsUnitEmbarked ~= nil and SC_IsUnitEmbarked(unit) then
 		domainMatches = SC_GetSafeNumber(function() return plot:IsWater() and 1 or 0 end, 0) > 0
@@ -5623,8 +5861,13 @@ function SC_FindSafeAdvanceWaypoint(player, unit, destinationPlot, reserved, sta
 			local plot = SC_GetNearbyPlot(sourcePlot:GetX(), sourcePlot:GetY(), dx, dy, radius)
 			local usable, moveDistance = SC_MoveCandidateIsUsable(player, unit, unitInfo, sourcePlot, plot, layer, reserved, nil, stats)
 			if usable and moveDistance ~= nil and moveDistance <= radius then
-				local checked, canEnter = pcall(function() return unit:CanMoveInto(plot, 0) end)
-				if checked and canEnter then
+				local canEnter = true
+				if moveDistance <= 1 then
+					local checked = false
+					checked, canEnter = pcall(function() return unit:CanMoveInto(plot, 0) end)
+					canEnter = checked and canEnter
+				end
+				if canEnter then
 					local targetDistance = Map.PlotDistance(plot:GetX(), plot:GetY(), destinationPlot:GetX(), destinationPlot:GetY())
 					local progress = sourceDistance - targetDistance
 					if progress > 0 then
@@ -6540,7 +6783,8 @@ local function SC_AutomateStrategicMovement(player, atWar)
 				debugMove("strategicMove noncombat-skip unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role))
 			elseif unitKey ~= nil and strategicCount >= strategicCap then
 				debugMove("strategicMove turn-skip unit="..SC_GetUnitDebugLabel(unit).." role="..tostring(role).." class="..tostring(doctrineClass).." orders="..tostring(strategicCount).."/"..tostring(strategicCap))
-			elseif SC_IsFragileTransportUnit ~= nil and SC_IsFragileTransportUnit(unit, unitInfo) then
+			elseif SC_IsFragileTransportUnit ~= nil and SC_IsFragileTransportUnit(unit, unitInfo)
+				and unitKey ~= nil and SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN[unitKey] then
 				if unitKey ~= nil then
 					SC_STRATEGIC_ORDERED_THIS_TURN[unitKey] = strategicCap
 				end
@@ -7189,6 +7433,31 @@ function SC_IsFragileTransportUnit(unit, unitInfo)
 	return unitInfo.Domain == "DOMAIN_SEA" and SC_IsTradeLike(unitInfo)
 end
 
+function SC_GetTransportMissionClass(unit, unitInfo)
+	unitInfo = unitInfo or SC_GetUnitInfo(unit)
+	if unit == nil or unitInfo == nil then
+		return "none"
+	end
+	if SC_IsTradeLike(unitInfo) then
+		return "trade"
+	end
+	if not SC_IsUnitEmbarked(unit) then
+		return "none"
+	end
+	local combat = false
+	pcall(function() combat = unit:IsCombatUnit() end)
+	if combat or SC_GetUnitPowerScore(unitInfo) > 0 then
+		return "combat"
+	end
+	if SC_IsWorkerLike(unitInfo) then
+		return "worker"
+	end
+	if unitInfo.DefaultUnitAI == "UNITAI_SETTLE" then
+		return "settler"
+	end
+	return "civilian"
+end
+
 function SC_IsNavalEscortUnit(unit, unitInfo, role)
 	unitInfo = unitInfo or SC_GetUnitInfo(unit)
 	if unit == nil or unitInfo == nil or unitInfo.Domain ~= "DOMAIN_SEA" then
@@ -7274,7 +7543,7 @@ function SC_CountEnemySeaThreatsNearPlot(player, targetPlot, radius)
 	return count
 end
 
-function SC_FindTransportOperationTarget(player, transport)
+function SC_FindTransportOperationTarget(player, transport, missionClass)
 	if player == nil or transport == nil then
 		return nil, "missing"
 	end
@@ -7286,6 +7555,27 @@ function SC_FindTransportOperationTarget(player, transport)
 	local bestPlot = nil
 	local bestScore = -999999
 	local bestReason = "none"
+	missionClass = missionClass or SC_GetTransportMissionClass(transport, SC_GetUnitInfo(transport))
+	if missionClass ~= "combat" then
+		if not SC_GetConfig("TransportCivilianRetreatUnderThreat", true) then
+			return nil, "civilian-retreat-disabled"
+		end
+		for city in player:Cities() do
+			local cityPlot = city:Plot()
+			local coastal = false
+			pcall(function() coastal = city:IsCoastal() end)
+			if cityPlot ~= nil and coastal then
+				local distance = Map.PlotDistance(transportPlot:GetX(), transportPlot:GetY(), cityPlot:GetX(), cityPlot:GetY())
+				local score = 2000 - distance * 40
+				if score > bestScore then
+					bestScore = score
+					bestPlot = cityPlot
+					bestReason = "friendly-coast"
+				end
+			end
+		end
+		return bestPlot, bestReason
+	end
 	for otherID, otherPlayer in pairs(Players) do
 		if otherPlayer ~= nil and otherPlayer:IsAlive() and otherPlayer:GetID() ~= player:GetID() and team:IsAtWar(otherPlayer:GetTeam()) then
 			for city in otherPlayer:Cities() do
@@ -7331,20 +7621,31 @@ function SC_TryAdvanceEscortedTransport(player, transport, reserved)
 	if transportPlot == nil or transportInfo == nil then
 		return 0, "missing-plot"
 	end
-	local targetPlot, targetReason = SC_FindTransportOperationTarget(player, transport)
+	local missionClass = SC_GetTransportMissionClass(transport, transportInfo)
+	local targetPlot, targetReason = SC_FindTransportOperationTarget(player, transport, missionClass)
 	if targetPlot == nil then
-		SC_TryHoldTransport(transport, "convoy-no-target")
-		return 1, "hold-no-target"
+		return 0, "defer-no-target class="..tostring(missionClass)
 	end
 	local waypointStats = {}
 	local waypoint = SC_FindSafeAdvanceWaypoint(player, transport, targetPlot, reserved, waypointStats, SC_GetConfig("TransportConvoyWaypointRadius", 3))
 	if waypoint == nil then
-		SC_TryHoldTransport(transport, "convoy-no-waypoint")
-		return 1, "hold-no-waypoint"
+		local targetDistance = Map.PlotDistance(transportPlot:GetX(), transportPlot:GetY(), targetPlot:GetX(), targetPlot:GetY())
+		if targetDistance <= 2 and SC_TryMoveMission(transport, targetPlot, "convoy-final", true) then
+			local transportKey = SC_GetUnitTurnKey(transport)
+			if transportKey ~= nil then
+				SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN[transportKey] = true
+				SC_MarkStrategicUnitDone(transport)
+			end
+			return 1, "advance-final target="..tostring(targetReason).." class="..tostring(missionClass)
+		end
+		return 0, "defer-no-waypoint class="..tostring(missionClass).." "..SC_GetMoveRejectStatsDebug(waypointStats)
 	end
 	local threats = SC_CountEnemySeaThreatsNearPlot(player, waypoint, SC_GetConfig("TransportThreatRadius", 6))
-	local requiredEscorts = SC_GetConfig("TransportMinimumEscorts", 1)
+	local requiredEscorts = 0
 	if threats > 0 then
+		requiredEscorts = SC_GetConfig("TransportMinimumEscorts", 1)
+	end
+	if threats >= SC_GetConfig("TransportSevereThreatCount", 2) then
 		requiredEscorts = SC_GetConfig("TransportEscortsUnderThreat", 2)
 	end
 	local coverage = SC_CountFriendlyNavalEscortsNearPlot(player, waypoint, SC_GetConfig("TransportEscortRadius", 2))
@@ -7401,6 +7702,11 @@ function SC_TryAdvanceEscortedTransport(player, transport, reserved)
 	end
 	if coverage < requiredEscorts then
 		SC_TryHoldTransport(transport, "convoy-insufficient-screen")
+		local transportKey = SC_GetUnitTurnKey(transport)
+		if transportKey ~= nil then
+			SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN[transportKey] = true
+			SC_MarkStrategicUnitDone(transport)
+		end
 		return actions + 1, "hold-coverage="..tostring(coverage).."/"..tostring(requiredEscorts).." threats="..tostring(threats)
 	end
 	if not SC_TryMoveMission(transport, waypoint, "convoy-advance", true) then
@@ -7409,10 +7715,11 @@ function SC_TryAdvanceEscortedTransport(player, transport, reserved)
 	end
 	local transportKey = SC_GetUnitTurnKey(transport)
 	if transportKey ~= nil then
+		SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN[transportKey] = true
 		SC_MarkStrategicUnitDone(transport)
 	end
 	SC_ReserveMovePlot(reserved, waypoint, SC_GetUnitStackLayer(transport))
-	return actions + 1, "advance target="..tostring(targetReason).." waypoint="..SC_GetPlotDebug(waypoint).." coverage="..tostring(coverage).." threats="..tostring(threats)
+	return actions + 1, "advance target="..tostring(targetReason).." class="..tostring(missionClass).." waypoint="..SC_GetPlotDebug(waypoint).." coverage="..tostring(coverage).." threats="..tostring(threats)
 end
 
 function SC_FindTransportEscortMovePlot(player, escort, transportPlot, reserved, stats)
@@ -7501,7 +7808,18 @@ function SC_AutomateTransportEscort(player, atWar)
 				if transportPlot ~= nil and (SC_GetSafeNumber(function() return transportPlot:IsWater() and 1 or 0 end, 0) > 0 or SC_IsUnitEmbarked(transport)) then
 					local escorts = SC_CountFriendlyNavalEscortsNearPlot(player, transportPlot, escortRadius)
 					local threats = SC_CountEnemySeaThreatsNearPlot(player, transportPlot, threatRadius)
-					if escorts <= 0 then
+					local missionClass = SC_GetTransportMissionClass(transport, transportInfo)
+					if missionClass == "trade" then
+						if transportKey == nil or not SC_TRANSPORT_RELEASE_LOGGED_THIS_TURN[transportKey] then
+							debugEscort("transportEscort release transport="..SC_GetUnitDebugLabel(transport).." class="..tostring(missionClass).." threats="..tostring(threats).." reason=trade-route-managed")
+							if transportKey ~= nil then SC_TRANSPORT_RELEASE_LOGGED_THIS_TURN[transportKey] = true end
+						end
+					elseif threats <= 0 and SC_GetConfig("TransportEscortOnlyWhenThreatened", true) then
+						if transportKey == nil or not SC_TRANSPORT_RELEASE_LOGGED_THIS_TURN[transportKey] then
+							debugEscort("transportEscort release transport="..SC_GetUnitDebugLabel(transport).." class="..tostring(missionClass).." threats=0 escorts="..tostring(escorts).." reason=no-local-threat")
+							if transportKey ~= nil then SC_TRANSPORT_RELEASE_LOGGED_THIS_TURN[transportKey] = true end
+						end
+					elseif escorts <= 0 then
 						local bestEscort = nil
 						local bestMovePlot = nil
 						local bestScore = -999999
@@ -7548,6 +7866,7 @@ function SC_AutomateTransportEscort(player, atWar)
 							handled = handled + 1
 							local held = SC_TryHoldTransport(transport, "escort-assembling")
 							if transportKey ~= nil then
+								SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN[transportKey] = true
 								SC_MarkStrategicUnitDone(transport)
 							end
 							if held then
@@ -7559,11 +7878,13 @@ function SC_AutomateTransportEscort(player, atWar)
 								" moveTo="..SC_GetPlotDebug(bestMovePlot)..
 								" threats="..tostring(threats)..
 								" escorts="..tostring(escorts)..
+								" class="..tostring(missionClass)..
 								" score="..tostring(bestScore)..
 								" transportHeld="..SC_BoolText(held))
 						elseif SC_GetConfig("TransportHoldWithoutEscort", true) and transport:CanMove() then
 							if SC_TryHoldTransport(transport, "no-escort") then
 								if transportKey ~= nil then
+									SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN[transportKey] = true
 									SC_MarkStrategicUnitDone(transport)
 								end
 								handled = handled + 1
@@ -7576,11 +7897,18 @@ function SC_AutomateTransportEscort(player, atWar)
 						end
 					else
 						local convoyActions, convoyStatus = SC_TryAdvanceEscortedTransport(player, transport, reserved)
+						if convoyActions <= 0 and threats > 0 and SC_GetConfig("TransportHoldWithoutEscort", true) and transport:CanMove() then
+							if SC_TryHoldTransport(transport, "convoy-deferred-under-threat") then
+								convoyActions = 1
+								convoyStatus = "hold-after-"..tostring(convoyStatus)
+							end
+						end
 						handled = handled + convoyActions
-						if transportKey ~= nil then
+						if transportKey ~= nil and convoyActions > 0 then
+							SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN[transportKey] = true
 							SC_MarkStrategicUnitDone(transport)
 						end
-						debugEscort("transportEscort convoy transport="..SC_GetUnitDebugLabel(transport).." plot="..SC_GetPlotDebug(transportPlot).." escorts="..tostring(escorts).." threats="..tostring(threats).." actions="..tostring(convoyActions).." status="..tostring(convoyStatus))
+						debugEscort("transportEscort convoy transport="..SC_GetUnitDebugLabel(transport).." class="..tostring(missionClass).." plot="..SC_GetPlotDebug(transportPlot).." escorts="..tostring(escorts).." threats="..tostring(threats).." actions="..tostring(convoyActions).." status="..tostring(convoyStatus))
 					end
 				end
 			end
@@ -7703,11 +8031,14 @@ local function SC_AutomateFinalUnitOrders(player, atWar)
 			local transportPlot = unit:GetPlot()
 			local escorts = SC_CountFriendlyNavalEscortsNearPlot(player, transportPlot, SC_GetConfig("TransportEscortRadius", 2))
 			local threats = SC_CountEnemySeaThreatsNearPlot(player, transportPlot, SC_GetConfig("TransportThreatRadius", 6))
-			if escorts <= 0 and SC_GetConfig("TransportHoldWithoutEscort", true) then
+			if threats > 0 and escorts <= 0 and SC_GetConfig("TransportHoldWithoutEscort", true) then
 				done = SC_TryHoldTransport(unit, "finalOrders-no-escort")
 				debugFinal("finalOrders transport-hold unit="..SC_GetUnitDebugLabel(unit).." escorts="..tostring(escorts).." threats="..tostring(threats).." done="..SC_BoolText(done).." state="..SC_GetUnitOrderDebug(unit))
 			else
-				debugFinal("finalOrders transport-covered unit="..SC_GetUnitDebugLabel(unit).." escorts="..tostring(escorts).." threats="..tostring(threats))
+				if unitKey == nil or not SC_TRANSPORT_RELEASE_LOGGED_THIS_TURN[unitKey] then
+					debugFinal("finalOrders transport-release unit="..SC_GetUnitDebugLabel(unit).." escorts="..tostring(escorts).." threats="..tostring(threats).." reason="..(threats <= 0 and "no-local-threat" or "covered"))
+					if unitKey ~= nil then SC_TRANSPORT_RELEASE_LOGGED_THIS_TURN[unitKey] = true end
+				end
 			end
 		end
 		if not done and unit:GetDamage() >= SC_GetConfig("HealDamageThreshold", 45) and unit:IsCombatUnit() then
@@ -7733,8 +8064,17 @@ local function SC_AutomateFinalUnitOrders(player, atWar)
 				end
 			end
 		end
-		if not done and SC_IsWorkerLike(unitInfo) and not SC_IsFragileTransportUnit(unit, unitInfo) then
-			done = SC_TryUnitCommand(unit, CommandTypes.COMMAND_AUTOMATE, GameInfoTypes.AUTOMATE_BUILD, -1)
+		if not done and SC_IsWorkerLike(unitInfo) then
+			local workerSafe = not SC_IsFragileTransportUnit(unit, unitInfo)
+			if not workerSafe then
+				local workerPlot = unit:GetPlot()
+				local workerThreats = workerPlot ~= nil and SC_CountEnemySeaThreatsNearPlot(player, workerPlot, SC_GetConfig("TransportThreatRadius", 6)) or 0
+				workerSafe = workerThreats <= 0
+				debugFinal("finalOrders worker-transport unit="..SC_GetUnitDebugLabel(unit).." threats="..tostring(workerThreats).." automate="..SC_BoolText(workerSafe))
+			end
+			if workerSafe then
+				done = SC_TryUnitCommand(unit, CommandTypes.COMMAND_AUTOMATE, GameInfoTypes.AUTOMATE_BUILD, -1)
+			end
 		end
 		if not done and SC_IsExploreLike(unitInfo) then
 			done = SC_TryUnitCommand(unit, CommandTypes.COMMAND_AUTOMATE, GameInfoTypes.AUTOMATE_EXPLORE, -1)
@@ -8578,10 +8918,12 @@ local function SC_ResetTakeoverPassCounterForTurn()
 		SC_OPERATION_FOCUS_THIS_TURN = {}
 		SC_RETREAT_THREAT_CACHE_THIS_TURN = {}
 		SC_SEA_THREAT_CACHE_THIS_TURN = {}
+		SC_MILITARY_ROSTER_CACHE_THIS_TURN = {}
 		SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN = {}
 		SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 		SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
 		SC_TRANSPORT_ESCORT_ORDERED_THIS_TURN = {}
+		SC_TRANSPORT_RELEASE_LOGGED_THIS_TURN = {}
 		SC_DIRECT_PUSH_FAILED_THIS_TURN = {}
 		SC_HEAL_FAILED_THIS_TURN = {}
 		SC_RANGE_FAILED_THIS_TURN = {}

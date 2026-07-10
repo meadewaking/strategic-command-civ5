@@ -24,6 +24,12 @@ SC_CONFIG.CapturedCityAction = "PUPPET"
 SC_CONFIG.AutoCityProduction = true
 SC_CONFIG.MinCityQueueLength = 3
 SC_CONFIG.TargetCityQueueLength = 3
+SC_CONFIG.WarQueueMilitarySlotsPerCity = 2
+SC_CONFIG.WarFrontlineUnitsPerCity = 3
+SC_CONFIG.WarSiegeUnitsPerCity = 1
+SC_CONFIG.WarAirUnitsPerCity = 1
+SC_CONFIG.WarNavalUnitsPerCoastalCity = 2
+SC_CONFIG.MilitaryNeedScoreBonus = 1200
 
 -- 本土防御：远程单位优先射击可达战争目标。
 SC_CONFIG.AutoLocalDefense = true
@@ -94,6 +100,9 @@ SC_CONFIG.TransportMinimumEscorts = 1
 SC_CONFIG.TransportEscortsUnderThreat = 2
 SC_CONFIG.TransportConvoyAssemblyRadius = 4
 SC_CONFIG.TransportConvoyWaypointRadius = 3
+SC_CONFIG.TransportEscortOnlyWhenThreatened = true
+SC_CONFIG.TransportCivilianRetreatUnderThreat = true
+SC_CONFIG.TransportSevereThreatCount = 2
 SC_CONFIG.DebugLogging = true
 SC_CONFIG.DebugUnitCommands = true
 SC_CONFIG.DebugUnitDecisions = true
