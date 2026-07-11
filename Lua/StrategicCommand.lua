@@ -3,7 +3,7 @@
 
 include("StrategicCommand_Config.lua")
 
-local SC_VERSION = "1.35"
+local SC_VERSION = "1.36"
 local SC_LOAD_TURN = -1
 local SC_SAVE_DATA = nil
 local SC_TAKEOVER_SAVE_KEY = "SC_TAKEOVER_REMAINING"
@@ -1240,11 +1240,8 @@ function SC_GetOperationFocusPlot(player, unit, unitInfo, profile)
 	elseif unitInfo.Domain == "DOMAIN_AIR" then
 		operationDomain = "air"
 	end
+	local unitPlot = unit ~= nil and unit:GetPlot() or nil
 	local cacheKey = tostring(player:GetID()).."|"..operationDomain
-	local cached = SC_OPERATION_FOCUS_THIS_TURN[cacheKey]
-	if cached ~= nil then
-		return cached.plot
-	end
 	local decapitationPlot = nil
 	local strikeReadiness = 0
 	if SC_GetDecapitationFocusPlot ~= nil then
@@ -1252,16 +1249,29 @@ function SC_GetOperationFocusPlot(player, unit, unitInfo, profile)
 	end
 	local readinessThreshold = SC_GetConfig("DecapitationReadinessThreshold", 0.55)
 	local decapitationAllowed = decapitationPlot ~= nil and strikeReadiness >= readinessThreshold
+	local decapitationDistance = 9999
+	if decapitationAllowed and unitPlot ~= nil then
+		decapitationDistance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), decapitationPlot:GetX(), decapitationPlot:GetY())
+		local joinDistance = SC_GetConfig("DecapitationLandJoinDistance", 10)
+		if operationDomain == "air" then
+			joinDistance = math.max((profile.range or 0) + 2, SC_GetConfig("DecapitationAirJoinDistance", 10))
+		elseif operationDomain == "sea" then
+			joinDistance = SC_GetConfig("DecapitationSeaJoinDistance", 12)
+		end
+		decapitationAllowed = decapitationDistance <= joinDistance
+	end
 	if decapitationAllowed and operationDomain == "sea" then
 		decapitationAllowed = SC_IsWaterOrCoastalStrategicPlot ~= nil and SC_IsWaterOrCoastalStrategicPlot(decapitationPlot)
 	end
 	if decapitationAllowed then
-		SC_OPERATION_FOCUS_THIS_TURN[cacheKey] = { plot = decapitationPlot, score = 5000 + math.floor(strikeReadiness * 1000) }
-		SC_Debug("operationFocus decapitation domain="..operationDomain.." class="..tostring(profile.doctrineClass).." target="..SC_GetPlotDebug(decapitationPlot).." readiness="..tostring(math.floor(strikeReadiness * 100)).."%")
+		SC_Debug("operationFocus decapitation-local domain="..operationDomain.." class="..tostring(profile.doctrineClass).." target="..SC_GetPlotDebug(decapitationPlot).." distance="..tostring(decapitationDistance).." readiness="..tostring(math.floor(strikeReadiness * 100)).."%")
 		return decapitationPlot
 	end
+	local cached = SC_OPERATION_FOCUS_THIS_TURN[cacheKey]
+	if cached ~= nil then
+		return cached.plot
+	end
 	local team = Teams[player:GetTeam()]
-	local unitPlot = unit ~= nil and unit:GetPlot() or nil
 	if team == nil then
 		return nil
 	end
@@ -2223,8 +2233,10 @@ function SC_GetEraRank(eraType)
 		ERA_RENAISSANCE = 3,
 		ERA_INDUSTRIAL = 4,
 		ERA_MODERN = 5,
-		ERA_POSTMODERN = 6,
-		ERA_FUTURE = 7
+		ERA_WORLDWAR = 6,
+		ERA_POSTMODERN = 7,
+		ERA_INFORMATION = 8,
+		ERA_FUTURE = 9
 	}
 	return ranks[eraType or ""] or -1
 end
@@ -2373,7 +2385,7 @@ function SC_GetStrikePackageTargets(player, snapshot)
 	local cityCount = math.max(SC_GetSafeNumber(function() return player:GetNumCities() end, 1), 1)
 	local packageCount = math.max(2, math.min(SC_GetConfig("MaxStrikePackages", 6), math.ceil(math.sqrt(cityCount))))
 	local hasCoast = snapshot ~= nil and snapshot.coastalCities > 0
-	local carrierTarget = hasCoast and math.max(1, math.ceil(packageCount / 2)) or 0
+	local carrierTarget = hasCoast and math.max(1, math.ceil(packageCount / 3)) or 0
 	return {
 		rapid_capture = math.max(2, math.ceil(packageCount * 0.8)),
 		line_frontline = math.max(2, packageCount),
@@ -2441,7 +2453,7 @@ function SC_GetMilitaryProductionNeed(player, city, atWar, reservedOrders, exclu
 	local targets = SC_GetStrikePackageTargets(player, snapshot)
 	local current = {
 		rapid_capture = snapshot.rapidCapture,
-		line_frontline = snapshot.lineFrontline,
+		line_frontline = snapshot.lineFrontline + snapshot.rapidCapture,
 		siege = snapshot.siege,
 		air_superiority = snapshot.airSuperiority,
 		carrier_air = snapshot.carrierAir,
@@ -2553,6 +2565,30 @@ function SC_GetStrikePackageReadiness(player)
 	return readiness, "packages="..tostring(targets.packageCount).." readiness="..tostring(math.floor(readiness * 100)).."% "..table.concat(parts, ",")
 end
 
+function SC_GetNearestFriendlyCaptureDistance(player, targetPlot)
+	if player == nil or targetPlot == nil then
+		return 9999
+	end
+	local bestDistance = 9999
+	for unit in player:Units() do
+		if unit ~= nil and not unit:IsDead() then
+			local unitInfo = SC_GetUnitInfo(unit)
+			local role = SC_GetUnitRole(unit, unitInfo)
+			local domainEligible = unitInfo ~= nil and (unitInfo.Domain ~= "DOMAIN_SEA" or SC_IsCoastalAssaultPlot(targetPlot))
+			if domainEligible and SC_CanActAsCityCaptureUnit(unit, unitInfo, role) then
+				local unitPlot = unit:GetPlot()
+				if unitPlot ~= nil then
+					local distance = Map.PlotDistance(unitPlot:GetX(), unitPlot:GetY(), targetPlot:GetX(), targetPlot:GetY())
+					if distance < bestDistance then
+						bestDistance = distance
+					end
+				end
+			end
+		end
+	end
+	return bestDistance
+end
+
 function SC_GetDecapitationFocusPlot(player)
 	if player == nil then
 		return nil, 0, "player=nil"
@@ -2585,20 +2621,24 @@ function SC_GetDecapitationFocusPlot(player)
 				for city in otherPlayer:Cities() do
 					local cityPlot = city:Plot()
 					if cityPlot ~= nil then
-						local distance = 0
-						if anchorPlot ~= nil then
-							distance = Map.PlotDistance(anchorPlot:GetX(), anchorPlot:GetY(), cityPlot:GetX(), cityPlot:GetY())
-						end
-						local damage, maxHP, damageRatio = SC_GetCityDamageInfo(city)
-						local score = 1800 - distance * 9 + damage * 4
-						local capital = SC_GetSafeNumber(function() return city:IsCapital() and 1 or 0 end, 0) > 0
-						if capital then score = score + SC_GetConfig("DecapitationCapitalBonus", 900) end
-						if damageRatio >= 0.72 then score = score + 650 elseif damageRatio >= 0.45 then score = score + 320 end
-						if SC_IsCoastalAssaultPlot(cityPlot) then score = score + 120 end
-						if score > bestScore then
-							bestScore = score
-							bestPlot = cityPlot
-							bestReason = "capital="..SC_BoolText(capital).." dist="..tostring(distance).." damage="..tostring(damage).."/"..tostring(maxHP)
+						local captureDistance = SC_GetNearestFriendlyCaptureDistance(player, cityPlot)
+						local stagingDistance = SC_GetConfig("DecapitationCaptureStagingDistance", 10)
+						if captureDistance <= stagingDistance then
+							local distance = 0
+							if anchorPlot ~= nil then
+								distance = Map.PlotDistance(anchorPlot:GetX(), anchorPlot:GetY(), cityPlot:GetX(), cityPlot:GetY())
+							end
+							local damage, maxHP, damageRatio = SC_GetCityDamageInfo(city)
+							local score = 1800 - distance * 9 - captureDistance * 45 + damage * 4
+							local capital = SC_GetSafeNumber(function() return city:IsCapital() and 1 or 0 end, 0) > 0
+							if capital then score = score + SC_GetConfig("DecapitationCapitalBonus", 900) end
+							if damageRatio >= 0.72 then score = score + 650 elseif damageRatio >= 0.45 then score = score + 320 end
+							if SC_IsCoastalAssaultPlot(cityPlot) then score = score + 120 end
+							if score > bestScore then
+								bestScore = score
+								bestPlot = cityPlot
+								bestReason = "capital="..SC_BoolText(capital).." anchorDist="..tostring(distance).." captureDist="..tostring(captureDistance).." damage="..tostring(damage).."/"..tostring(maxHP)
+							end
 						end
 					end
 				end
@@ -3312,6 +3352,20 @@ local function SC_ScoreRangeTarget(player, unit, role, unitPlot, targetPlot, ene
 	end
 	if enemyCity ~= nil then
 		local cityDamage, cityMaxHP, cityDamageRatio = SC_GetCityDamageInfo(enemyCity)
+		if cityMaxHP > 0 and cityDamage >= cityMaxHP - 1 then
+			return -999999, "captureWaitZeroHP"
+		end
+		if cityDamageRatio >= SC_GetConfig("CityCaptureReadyDamageRatio", 0.72) then
+			local captureNear = SC_CountFriendlyRoleNearPlot(
+				player,
+				targetPlot,
+				SC_GetConfig("CaptureReadyFireSupportRadius", 5),
+				"capture",
+				1)
+			if captureNear <= 0 then
+				return -999999, "captureWaitNoUnit"
+			end
+		end
 		local doctrineClass = SC_GetUnitDoctrineClass(unit, unitInfo, role)
 		local enemyScreen = SC_CountEnemyCombatPresenceNearPlot(player, targetPlot, SC_GetConfig("OperationEnemyScreenRadius", 4), 6)
 		local cityStrikeCount = SC_GetRangeTargetStrikeCount(targetPlot, "city", "all")
@@ -3431,6 +3485,9 @@ function SC_GetRangeTargetStatsDebug(stats)
 		" inRangeCities="..tostring(stats.inRangeCities or 0)..
 		" outOfRange="..tostring(stats.outOfRange or 0)..
 		" noPlot="..tostring(stats.noPlot or 0)..
+		" lowScore="..tostring(stats.lowScore or 0)..
+		" captureWaitZeroHP="..tostring(stats.captureWaitZeroHP or 0)..
+		" captureWaitNoUnit="..tostring(stats.captureWaitNoUnit or 0)..
 		" bestScore="..tostring(stats.bestScore or "nil")..
 		" bestKind="..tostring(stats.bestKind or "nil")..
 		" bestReason="..tostring(stats.bestReason or "nil")
@@ -3459,6 +3516,9 @@ local function SC_FindRangeTarget(player, unit)
 		inRangeCities = 0,
 		outOfRange = 0,
 		noPlot = 0,
+		lowScore = 0,
+		captureWaitZeroHP = 0,
+		captureWaitNoUnit = 0,
 		bestScore = nil,
 		bestKind = nil
 	}
@@ -3491,6 +3551,11 @@ local function SC_FindRangeTarget(player, unit)
 				elseif SC_IsPotentialRangeStrikeAt(unit, plot) then
 					stats.inRangeCities = stats.inRangeCities + 1
 					local score, reason = SC_ScoreRangeTarget(player, unit, role, unitPlot, plot, nil, city)
+					if reason == "captureWaitZeroHP" then
+						stats.captureWaitZeroHP = stats.captureWaitZeroHP + 1
+					elseif reason == "captureWaitNoUnit" then
+						stats.captureWaitNoUnit = stats.captureWaitNoUnit + 1
+					end
 					if score > bestScore then
 						bestScore = score
 						bestPlot = plot
@@ -3503,6 +3568,11 @@ local function SC_FindRangeTarget(player, unit)
 				end
 			end
 		end
+	end
+	if bestPlot ~= nil and bestScore < SC_GetConfig("MinTacticalTargetScore", 1) then
+		stats.lowScore = (stats.lowScore or 0) + 1
+		stats.bestReason = "below-threshold:"..tostring(bestScore)..":"..tostring(stats.bestReason or "none")
+		bestPlot = nil
 	end
 	return bestPlot, bestScore, stats
 end
@@ -5552,8 +5622,11 @@ local function SC_ScoreStrategicTarget(player, unit, role, unitPlot, targetPlot,
 			score = score + focusScore
 			SC_AddScoreReason(reasons, "operationFocus", focusScore)
 			if focusDistance == 0 then
-				local _, strikeReadiness = SC_GetDecapitationFocusPlot(player)
-				if strikeReadiness >= SC_GetConfig("DecapitationReadinessThreshold", 0.55) then
+				local decapitationPlot, strikeReadiness = SC_GetDecapitationFocusPlot(player)
+				local isDecapitationTarget = decapitationPlot ~= nil
+					and targetPlot:GetX() == decapitationPlot:GetX()
+					and targetPlot:GetY() == decapitationPlot:GetY()
+				if isDecapitationTarget and strikeReadiness >= SC_GetConfig("DecapitationReadinessThreshold", 0.55) then
 					local decapitationScore = math.floor(420 + strikeReadiness * 380)
 					score = score + decapitationScore
 					SC_AddScoreReason(reasons, "decapitation", decapitationScore)

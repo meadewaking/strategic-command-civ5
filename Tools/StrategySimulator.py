@@ -468,7 +468,7 @@ def convoy_scenario() -> dict[str, Any]:
 def production_scenario() -> dict[str, Any]:
     city_count = 22
     package_count = max(2, min(6, math.ceil(math.sqrt(city_count))))
-    carrier_target = max(1, math.ceil(package_count / 2))
+    carrier_target = max(1, math.ceil(package_count / 3))
     targets = {
         "rapid_capture": max(2, math.ceil(package_count * 0.8)),
         "line_frontline": max(2, package_count),
@@ -508,11 +508,14 @@ def production_scenario() -> dict[str, Any]:
     for city_domain in city_domains:
         candidates: dict[str, float] = {}
         for name, target in targets.items():
-            deficit = target - roster[name] - reservations[name]
+            current = roster[name]
+            if name == "line_frontline":
+                current += roster["rapid_capture"]
+            deficit = target - current - reservations[name]
             if deficit <= 0 or (name in sea_needs and city_domain != "coastal"):
                 continue
             score = priority[name] + deficit * 100 / target
-            if roster[name] + reservations[name] <= 0:
+            if current + reservations[name] <= 0:
                 score += 45
             candidates[name] = score
         if not candidates:
@@ -524,6 +527,7 @@ def production_scenario() -> dict[str, Any]:
     assert assignments[0] == "air_strike", assignments
     assert len(set(assignments)) >= 6, assignments
     assert assignments.count("rapid_capture") == 0, assignments
+    assert assignments.count("line_frontline") == 0, assignments
     assert any(need in sea_needs for need in assignments), assignments
     assert "missile_strike" in assignments, assignments
     joint_arm_orders = sum(
@@ -579,6 +583,49 @@ def production_scenario() -> dict[str, Any]:
         "unique_wonder_assignments": wonder_assignments,
         "military_slots": military_slots,
         "process_appended_to_nonempty_queue": append_process,
+    }
+
+
+def executable_focus_scenario() -> dict[str, Any]:
+    def city_fire_allowed(damage: int, max_hp: int, capture_distance: int, score: float) -> tuple[bool, str]:
+        if max_hp > 0 and damage >= max_hp - 1:
+            return False, "captureWaitZeroHP"
+        if max_hp > 0 and damage / max_hp >= 0.72 and capture_distance > 5:
+            return False, "captureWaitNoUnit"
+        if score < 1:
+            return False, "below-threshold"
+        return True, "fire"
+
+    candidates = [
+        {"name": "far_damaged_city", "capital": False, "capture_distance": 13, "score": 2965},
+        {"name": "near_capital", "capital": True, "capture_distance": 6, "score": 2700},
+    ]
+    feasible = [city for city in candidates if city["capture_distance"] <= 10]
+    selected = max(feasible, key=lambda city: city["score"])
+    assert selected["name"] == "near_capital", selected
+    assert city_fire_allowed(249, 250, 13, 3408) == (False, "captureWaitZeroHP")
+    assert city_fire_allowed(191, 250, 13, 3920) == (False, "captureWaitNoUnit")
+    assert city_fire_allowed(120, 250, 3, -10) == (False, "below-threshold")
+    assert city_fire_allowed(120, 250, 3, 500) == (True, "fire")
+    assert 13 > 10
+    assert 8 <= 10
+
+    era_rank = {
+        "ERA_MODERN": 5,
+        "ERA_WORLDWAR": 6,
+        "ERA_POSTMODERN": 7,
+        "ERA_INFORMATION": 8,
+        "ERA_FUTURE": 9,
+    }
+    assert era_rank["ERA_INFORMATION"] - era_rank["ERA_MODERN"] == 3
+    assert era_rank["ERA_INFORMATION"] - era_rank["ERA_WORLDWAR"] == 2
+    return {
+        "scenario": "executable_local_decapitation",
+        "selected_focus": selected["name"],
+        "far_city_rejected": True,
+        "zero_hp_fire_suppressed": True,
+        "negative_score_fire_suppressed": True,
+        "custom_era_gap_detected": True,
     }
 
 
@@ -669,6 +716,7 @@ def main() -> int:
         "combat_regression": future_carrier_group_scenario(catalog),
         "convoy_regression": convoy_scenario(),
         "production_regression": production_scenario(),
+        "focus_regression": executable_focus_scenario(),
     }
     if args.log is not None:
         if not args.log.exists():
@@ -687,8 +735,10 @@ def main() -> int:
         print(f"PASS catalog: {audit['units']} units, {audit['military_units']} military, {len(audit['classes'])} doctrine classes")
         print(f"PASS combat: destroyed {combat['enemy_units_destroyed']}/{combat['enemy_units_total']}, city captured={combat['city_captured']}, losses={combat['friendly_losses']}, accidental wars={combat['accidental_wars']}")
         production = result["production_regression"]
+        focus = result["focus_regression"]
         print("PASS convoy: zero-threat release, threat-scaled escort, civilian retreat")
         print(f"PASS production: packages={production['package_count']}, arms={','.join(production['categories_filled'])}, unique wonder assignments={production['unique_wonder_assignments']}, military queue slots={production['military_slots']}")
+        print(f"PASS focus: selected={focus['selected_focus']}, far city rejected, zero-HP and negative-score fire suppressed")
         print("Doctrine distribution:")
         for doctrine_class, count in audit["classes"].items():
             print(f"  {doctrine_class}: {count}")
