@@ -30,6 +30,7 @@ SC_DECAPITATION_FOCUS_THIS_TURN = {}
 SC_RETREAT_THREAT_CACHE_THIS_TURN = {}
 SC_SEA_THREAT_CACHE_THIS_TURN = {}
 SC_MILITARY_ROSTER_CACHE_THIS_TURN = {}
+SC_LEGACY_QUEUE_PRUNED = {}
 SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN = {}
 SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
@@ -4664,6 +4665,65 @@ function SC_GetBuildingReservationKey(city, building)
 	return "C:"..tostring(cityID)..":B:"..tostring(building.ID), false
 end
 
+function SC_PruneLegacyV135ProductionOrders(city)
+	if city == nil then
+		return 0
+	end
+	local cityKey = tostring(SC_GetSafeNumber(function() return city:GetOwner() end, -1)).."|"..tostring(SC_GetSafeNumber(function() return city:GetID() end, -1))
+	if SC_LEGACY_QUEUE_PRUNED[cityKey] then
+		return 0
+	end
+	SC_LEGACY_QUEUE_PRUNED[cityKey] = true
+	local queueLength = SC_GetSafeNumber(function() return city:GetOrderQueueLength() end, 0)
+	if queueLength <= 0 then
+		return 0
+	end
+	local kept = {}
+	local removed = 0
+	local removedTypes = {}
+	for index = 0, queueLength - 1, 1 do
+		local orderType, data1, data2, save, rush = nil, nil, nil, nil, nil
+		local ok = pcall(function()
+			orderType, data1, data2, save, rush = city:GetOrderFromQueue(index)
+		end)
+		if ok then
+			local remove = false
+			if OrderTypes ~= nil and orderType == OrderTypes.ORDER_TRAIN and data1 ~= nil then
+				local unitInfo = GameInfo.Units[data1]
+				local unitType = unitInfo ~= nil and unitInfo.Type or ""
+				remove = unitType == "UNIT_GREAT_WAR_INFANTRY" or unitType == "UNIT_CARRIER"
+				if remove then
+					removed = removed + 1
+					table.insert(removedTypes, unitType)
+				end
+			end
+			if not remove then
+				table.insert(kept, { orderType = orderType, data1 = data1, data2 = data2, save = save, rush = rush })
+			end
+		end
+	end
+	if removed <= 0 then
+		return 0
+	end
+	local cleared = pcall(function() city:ClearOrderQueue() end)
+	if not cleared then
+		SC_Debug("cityProduction legacy-prune failed city="..tostring(city:GetName()).." reason=clear-failed removed="..tostring(removed))
+		return 0
+	end
+	local restored = 0
+	for _, order in ipairs(kept) do
+		local pushed = pcall(function()
+			city:PushOrder(order.orderType, order.data1, order.data2 or -1, order.save or 0, order.rush or false, false)
+		end)
+		if not pushed then
+			pushed = SC_PushCityOrder(city, order.orderType, order.data1)
+		end
+		if pushed then restored = restored + 1 end
+	end
+	SC_Debug("cityProduction legacy-prune city="..tostring(city:GetName()).." removed="..tostring(removed).." types="..table.concat(removedTypes, ",").." kept="..tostring(#kept).." restored="..tostring(restored))
+	return removed
+end
+
 function SC_SeedProductionReservations(player)
 	local reserved = {}
 	if player == nil then
@@ -4910,6 +4970,9 @@ local function SC_AutomateCities(player, atWar)
 		return changed, details
 	end
 	local targetQueue = SC_GetConfig("TargetCityQueueLength", SC_GetConfig("MinCityQueueLength", 1))
+	for city in player:Cities() do
+		SC_PruneLegacyV135ProductionOrders(city)
+	end
 	local reservedOrders = SC_SeedProductionReservations(player)
 	for city in player:Cities() do
 		local safety = 0

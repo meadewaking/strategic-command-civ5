@@ -574,6 +574,9 @@ def production_scenario() -> dict[str, Any]:
     append_process = len(queue) == 0
     assert military_slots == 2
     assert not append_process
+    legacy_queue = ["BUILDING_HOTEL", "UNIT_GREAT_WAR_INFANTRY", "UNIT_CARRIER", "UNIT_WWI_BOMBER"]
+    migrated_queue = [item for item in legacy_queue if item not in {"UNIT_GREAT_WAR_INFANTRY", "UNIT_CARRIER"}]
+    assert migrated_queue == ["BUILDING_HOTEL", "UNIT_WWI_BOMBER"], migrated_queue
     return {
         "scenario": "strike_package_production_and_queue",
         "package_count": package_count,
@@ -583,6 +586,7 @@ def production_scenario() -> dict[str, Any]:
         "unique_wonder_assignments": wonder_assignments,
         "military_slots": military_slots,
         "process_appended_to_nonempty_queue": append_process,
+        "legacy_orders_removed": len(legacy_queue) - len(migrated_queue),
     }
 
 
