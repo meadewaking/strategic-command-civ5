@@ -28,6 +28,14 @@ SC_CONFIG.WarQueueMilitarySlotsPerCity = 2
 SC_CONFIG.MaxStrikePackages = 6
 SC_CONFIG.MissingStrikeArmBonus = 45
 SC_CONFIG.MilitaryNeedScoreBonus = 1200
+SC_CONFIG.AutoElitePrograms = true
+SC_CONFIG.MaxQueuedEliteProjects = 2
+SC_CONFIG.EliteUnitTargetPerType = 1
+SC_CONFIG.EliteProjectMinScore = 600
+SC_CONFIG.EliteProjectScoreBonusAtWar = 700
+SC_CONFIG.EliteUnitScoreBonus = 1800
+SC_CONFIG.MaxEliteEraLag = 2
+SC_CONFIG.AllowMechEliteProduction = false
 
 -- 本土防御：远程单位优先射击可达战争目标。
 SC_CONFIG.AutoLocalDefense = true

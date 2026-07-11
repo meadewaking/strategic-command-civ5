@@ -633,6 +633,73 @@ def executable_focus_scenario() -> dict[str, Any]:
     }
 
 
+def elite_program_scenario(catalog: UnitCatalog) -> dict[str, Any]:
+    query = """
+        SELECT u.Type AS UnitType, u.Combat, u.RangedCombat, u.Cost, u.Moves, u.Range,
+               u.ProjectPrereq, t.Era, p.Type AS ProjectType, p.MaxGlobalInstances
+        FROM Units u
+        JOIN Projects p ON p.Type = u.ProjectPrereq
+        LEFT JOIN Technologies t ON t.Type = u.PrereqTech
+        WHERE p.MaxGlobalInstances = 1
+          AND MAX(COALESCE(u.Combat, 0), COALESCE(u.RangedCombat, 0)) > 0
+          AND COALESCE(u.NukeDamageLevel, 0) <= 0
+        ORDER BY u.Type
+    """
+    elite_rows = [dict(row) for row in catalog.connection.execute(query)]
+    elite_rows = [row for row in elite_rows if row["UnitType"] != "UNIT_MECH"]
+    elite_types = {row["UnitType"] for row in elite_rows}
+    expected = {
+        "UNIT_SUPER_TANK",
+        "UNIT_ELITE_BATTLECRUISER",
+        "UNIT_PROTOTYPE_BOMBER",
+        "UNIT_NUCLEAR_ARTILLERY",
+        "UNIT_UNDERWATER_CARRIER",
+        "UNIT_CRUSADER_ARTILLERY",
+        "UNIT_CHINESE_WEISHI",
+        "UNIT_PAKFA_T50",
+        "UNIT_STEALTH_HELICOPTER",
+        "UNIT_PARTICLE_CANNON",
+    }
+    assert expected <= elite_types, sorted(expected - elite_types)
+    assert "UNIT_MECH" not in elite_types
+    assert len(elite_rows) >= 20, len(elite_rows)
+
+    era_rank = {
+        "ERA_ANCIENT": 0, "ERA_CLASSICAL": 1, "ERA_MEDIEVAL": 2,
+        "ERA_RENAISSANCE": 3, "ERA_INDUSTRIAL": 4, "ERA_MODERN": 5,
+        "ERA_WORLDWAR": 6, "ERA_POSTMODERN": 7,
+        "ERA_INFORMATION": 8, "ERA_FUTURE": 9,
+    }
+    relevant = [row for row in elite_rows if 0 <= 8 - era_rank.get(row["Era"], -99) <= 2]
+    scored = sorted(
+        relevant,
+        key=lambda row: (
+            max(row["Combat"] or 0, row["RangedCombat"] or 0) * 5
+            + (row["RangedCombat"] or 0) * 1.5
+            + (row["Range"] or 0) * 45
+            + (row["Moves"] or 0) * 12
+            + (row["Cost"] or 0) / 8
+        ),
+        reverse=True,
+    )
+    queued_projects = []
+    for row in scored:
+        if row["ProjectType"] not in queued_projects:
+            queued_projects.append(row["ProjectType"])
+        if len(queued_projects) == 2:
+            break
+    assert len(queued_projects) == 2
+    return {
+        "scenario": "elite_project_unlock_and_unit_cap",
+        "elite_units_detected": len(elite_rows),
+        "late_elite_units": len(relevant),
+        "queued_project_cap": len(queued_projects),
+        "selected_projects": queued_projects,
+        "unit_target_per_type": 1,
+        "mech_auto_production": False,
+    }
+
+
 def audit_catalog(catalog: UnitCatalog) -> dict[str, Any]:
     profiles = [catalog.profile(unit_type) for unit_type in catalog.units]
     military = [
@@ -721,6 +788,7 @@ def main() -> int:
         "convoy_regression": convoy_scenario(),
         "production_regression": production_scenario(),
         "focus_regression": executable_focus_scenario(),
+        "elite_regression": elite_program_scenario(catalog),
     }
     if args.log is not None:
         if not args.log.exists():
@@ -740,9 +808,11 @@ def main() -> int:
         print(f"PASS combat: destroyed {combat['enemy_units_destroyed']}/{combat['enemy_units_total']}, city captured={combat['city_captured']}, losses={combat['friendly_losses']}, accidental wars={combat['accidental_wars']}")
         production = result["production_regression"]
         focus = result["focus_regression"]
+        elite = result["elite_regression"]
         print("PASS convoy: zero-threat release, threat-scaled escort, civilian retreat")
         print(f"PASS production: packages={production['package_count']}, arms={','.join(production['categories_filled'])}, unique wonder assignments={production['unique_wonder_assignments']}, military queue slots={production['military_slots']}")
         print(f"PASS focus: selected={focus['selected_focus']}, far city rejected, zero-HP and negative-score fire suppressed")
+        print(f"PASS elite: detected={elite['elite_units_detected']}, late={elite['late_elite_units']}, queued projects={elite['queued_project_cap']}, mech excluded")
         print("Doctrine distribution:")
         for doctrine_class, count in audit["classes"].items():
             print(f"  {doctrine_class}: {count}")

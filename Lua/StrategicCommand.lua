@@ -3,7 +3,7 @@
 
 include("StrategicCommand_Config.lua")
 
-local SC_VERSION = "1.36"
+local SC_VERSION = "1.37"
 local SC_LOAD_TURN = -1
 local SC_SAVE_DATA = nil
 local SC_TAKEOVER_SAVE_KEY = "SC_TAKEOVER_REMAINING"
@@ -31,6 +31,7 @@ SC_RETREAT_THREAT_CACHE_THIS_TURN = {}
 SC_SEA_THREAT_CACHE_THIS_TURN = {}
 SC_MILITARY_ROSTER_CACHE_THIS_TURN = {}
 SC_LEGACY_QUEUE_PRUNED = {}
+SC_ELITE_PROJECT_UNIT_CACHE = {}
 SC_RANGE_TARGET_STRIKE_COUNT_THIS_TURN = {}
 SC_STACK_MOVE_ATTEMPTED_THIS_TURN = {}
 SC_FINAL_ORDER_ATTEMPTED_THIS_TURN = {}
@@ -744,6 +745,22 @@ local function SC_CityCanMaintain(city, processID)
 	end
 	local ok, result = pcall(function()
 		return city:CanMaintain(processID)
+	end)
+	return ok and result
+end
+
+local function SC_CityCanCreate(city, projectID)
+	if city == nil or projectID == nil or projectID < 0 then
+		return false
+	end
+	local ok, result = pcall(function()
+		return city:CanCreate(projectID)
+	end)
+	if ok then
+		return result
+	end
+	ok, result = pcall(function()
+		return city:CanCreate(projectID, 0, 1)
 	end)
 	return ok and result
 end
@@ -2308,6 +2325,128 @@ function SC_GetOutdatedUnitRejectReason(unitInfo, playerEraRank)
 		return "low-power:"..tostring(power)
 	end
 	return nil
+end
+
+function SC_PlayerHasTechType(player, techType)
+	if player == nil or techType == nil or techType == "" then
+		return false
+	end
+	local techID = SC_GetID(techType)
+	local team = Teams[SC_GetSafeNumber(function() return player:GetTeam() end, -1)]
+	if team == nil or techID == nil or techID < 0 then
+		return false
+	end
+	return SC_GetSafeNumber(function() return team:IsHasTech(techID) and 1 or 0 end, 0) > 0
+end
+
+function SC_IsEliteUnitInfo(unitInfo)
+	if unitInfo == nil or not SC_GetConfig("AutoElitePrograms", true) then
+		return false
+	end
+	if unitInfo.Type == "UNIT_MECH" and not SC_GetConfig("AllowMechEliteProduction", false) then
+		return false
+	end
+	if SC_GetUnitPowerScore(unitInfo) <= 0 or SC_DBNumber(unitInfo.NukeDamageLevel, 0) > 0 then
+		return false
+	end
+	local projectType = unitInfo.ProjectPrereq
+	if projectType == nil or projectType == "" or GameInfo == nil or GameInfo.Projects == nil then
+		return false
+	end
+	local projectInfo = GameInfo.Projects[projectType]
+	return projectInfo ~= nil and SC_DBNumber(projectInfo.MaxGlobalInstances, -1) == 1
+end
+
+function SC_GetEliteProjectUnits(projectType)
+	if projectType == nil or projectType == "" then
+		return {}
+	end
+	if SC_ELITE_PROJECT_UNIT_CACHE[projectType] ~= nil then
+		return SC_ELITE_PROJECT_UNIT_CACHE[projectType]
+	end
+	local units = {}
+	if GameInfo ~= nil and GameInfo.Units ~= nil then
+		for unitInfo in GameInfo.Units() do
+			if unitInfo.ProjectPrereq == projectType and SC_IsEliteUnitInfo(unitInfo) then
+				table.insert(units, unitInfo)
+			end
+		end
+	end
+	SC_ELITE_PROJECT_UNIT_CACHE[projectType] = units
+	return units
+end
+
+function SC_IsEliteUnitEraRelevant(playerEraRank, unitInfo, player)
+	if unitInfo == nil then
+		return false, "missing-unit"
+	end
+	if unitInfo.ObsoleteTech ~= nil and unitInfo.ObsoleteTech ~= "" and SC_PlayerHasTechType(player, unitInfo.ObsoleteTech) then
+		return false, "obsolete-tech"
+	end
+	local unitEraRank = SC_GetUnitEraRank(unitInfo)
+	if playerEraRank >= 0 and unitEraRank >= 0 and playerEraRank - unitEraRank > SC_GetConfig("MaxEliteEraLag", 2) then
+		return false, "era-lag:"..tostring(playerEraRank - unitEraRank)
+	end
+	return true, "relevant"
+end
+
+function SC_GetEliteUnitStrategicScore(unitInfo, playerEraRank, atWar)
+	if unitInfo == nil then
+		return -999999
+	end
+	local power = SC_GetUnitPowerScore(unitInfo)
+	local unitEraRank = SC_GetUnitEraRank(unitInfo)
+	local score = power * 5 + SC_DBNumber(unitInfo.RangedCombat, 0) * 1.5
+		+ SC_DBNumber(unitInfo.Range, 0) * 45 + SC_DBNumber(unitInfo.Moves, 0) * 12
+		+ math.max(SC_DBNumber(unitInfo.Cost, 0), 0) / 8 + math.max(unitEraRank, 0) * 80
+	if playerEraRank >= 0 and unitEraRank >= playerEraRank then
+		score = score + 300
+	end
+	if atWar then
+		score = score + SC_GetConfig("EliteProjectScoreBonusAtWar", 700)
+	end
+	return score
+end
+
+function SC_CountPlayerUnitType(player, unitID)
+	if player == nil or unitID == nil then
+		return 0
+	end
+	local count = 0
+	for unit in player:Units() do
+		if unit ~= nil and not unit:IsDead() and SC_GetSafeNumber(function() return unit:GetUnitType() end, -1) == unitID then
+			count = count + 1
+		end
+	end
+	return count
+end
+
+function SC_GetBestTrainableEliteUnit(player, city, atWar, reservedOrders)
+	if player == nil or city == nil or not SC_GetConfig("AutoElitePrograms", true) then
+		return nil, -999999, 0, "disabled"
+	end
+	local playerEraRank = SC_GetPlayerEraRankForCity(city)
+	local bestUnitID = nil
+	local bestScore = -999999
+	local bestReason = "none"
+	local candidates = 0
+	for unitInfo in GameInfo.Units() do
+		if SC_IsEliteUnitInfo(unitInfo) and SC_CityCanTrain(city, unitInfo.ID) then
+			local relevant, relevanceReason = SC_IsEliteUnitEraRelevant(playerEraRank, unitInfo, player)
+			local queued = reservedOrders ~= nil and SC_DBNumber(reservedOrders["ELITE_UNIT:"..tostring(unitInfo.ID)], 0) or 0
+			local existing = SC_CountPlayerUnitType(player, unitInfo.ID)
+			if relevant and existing + queued < SC_GetConfig("EliteUnitTargetPerType", 1) then
+				candidates = candidates + 1
+				local score = SC_GetEliteUnitStrategicScore(unitInfo, playerEraRank, atWar) + SC_GetConfig("EliteUnitScoreBonus", 1800)
+				if score > bestScore then
+					bestScore = score
+					bestUnitID = unitInfo.ID
+					bestReason = "project="..tostring(unitInfo.ProjectPrereq).." existing="..tostring(existing).." queued="..tostring(queued).." relevance="..relevanceReason
+				end
+			end
+		end
+	end
+	return bestUnitID, bestScore, candidates, bestReason
 end
 
 function SC_GetMilitaryRosterSnapshot(player)
@@ -4724,6 +4863,62 @@ function SC_PruneLegacyV135ProductionOrders(city)
 	return removed
 end
 
+function SC_GetBestEliteProject(player, city, atWar, reservedOrders)
+	if player == nil or city == nil or not SC_GetConfig("AutoElitePrograms", true) or GameInfo == nil or GameInfo.Projects == nil then
+		return nil, -999999, 0, "disabled"
+	end
+	local queuedTotal = reservedOrders ~= nil and SC_DBNumber(reservedOrders["ELITE_PROJECT_TOTAL"], 0) or 0
+	if queuedTotal >= SC_GetConfig("MaxQueuedEliteProjects", 2) then
+		return nil, -999999, 0, "project-queue-cap:"..tostring(queuedTotal)
+	end
+	local queueLength = SC_GetSafeNumber(function() return city:GetOrderQueueLength() end, 0)
+	for index = 0, queueLength - 1, 1 do
+		local orderType, data1 = nil, nil
+		pcall(function() orderType, data1 = city:GetOrderFromQueue(index) end)
+		if OrderTypes ~= nil and orderType == OrderTypes.ORDER_CREATE and data1 ~= nil then
+			local queuedProject = GameInfo.Projects[data1]
+			if queuedProject ~= nil and #SC_GetEliteProjectUnits(queuedProject.Type) > 0 then
+				return nil, -999999, 0, "city-project-slot"
+			end
+		end
+	end
+	local playerEraRank = SC_GetPlayerEraRankForCity(city)
+	local bestProjectID = nil
+	local bestScore = -999999
+	local bestReason = "none"
+	local candidates = 0
+	for projectInfo in GameInfo.Projects() do
+		local reserveKey = "X:P:"..tostring(projectInfo.ID)
+		if SC_DBNumber(projectInfo.MaxGlobalInstances, -1) == 1
+			and (reservedOrders == nil or not reservedOrders[reserveKey])
+			and SC_CityCanCreate(city, projectInfo.ID) then
+			local unlockedUnits = SC_GetEliteProjectUnits(projectInfo.Type)
+			local projectBestScore = -999999
+			local projectBestUnit = nil
+			for _, unitInfo in ipairs(unlockedUnits) do
+				local relevant = SC_IsEliteUnitEraRelevant(playerEraRank, unitInfo, player)
+				if relevant then
+					local score = SC_GetEliteUnitStrategicScore(unitInfo, playerEraRank, atWar)
+					if score > projectBestScore then
+						projectBestScore = score
+						projectBestUnit = unitInfo
+					end
+				end
+			end
+			if projectBestUnit ~= nil and projectBestScore >= SC_GetConfig("EliteProjectMinScore", 600) then
+				candidates = candidates + 1
+				local score = projectBestScore - math.max(SC_DBNumber(projectInfo.Cost, 0), 0) / 5
+				if score > bestScore then
+					bestScore = score
+					bestProjectID = projectInfo.ID
+					bestReason = "unlocks="..tostring(projectBestUnit.Type).." unitScore="..tostring(math.floor(projectBestScore)).." projectCost="..tostring(projectInfo.Cost).." playerEra="..tostring(playerEraRank)
+				end
+			end
+		end
+	end
+	return bestProjectID, bestScore, candidates, bestReason
+end
+
 function SC_SeedProductionReservations(player)
 	local reserved = {}
 	if player == nil then
@@ -4741,10 +4936,22 @@ function SC_SeedProductionReservations(player)
 				if unique and reserveKey ~= nil then
 					reserved[reserveKey] = true
 				end
+			elseif OrderTypes ~= nil and orderType == OrderTypes.ORDER_CREATE and data1 ~= nil then
+				local projectInfo = GameInfo.Projects[data1]
+				if projectInfo ~= nil then
+					reserved["X:P:"..tostring(data1)] = true
+					if #SC_GetEliteProjectUnits(projectInfo.Type) > 0 then
+						reserved["ELITE_PROJECT_TOTAL"] = SC_DBNumber(reserved["ELITE_PROJECT_TOTAL"], 0) + 1
+					end
+				end
 			elseif OrderTypes ~= nil and orderType == OrderTypes.ORDER_TRAIN and data1 ~= nil then
 				local unitInfo = GameInfo.Units[data1]
 				local needKey = SC_GetProductionNeedForUnitInfo(unitInfo)
 				reserved["U:"..tostring(data1)] = true
+				if SC_IsEliteUnitInfo(unitInfo) then
+					local eliteKey = "ELITE_UNIT:"..tostring(data1)
+					reserved[eliteKey] = SC_DBNumber(reserved[eliteKey], 0) + 1
+				end
 				if needKey ~= nil then
 					local needReserveKey = "NEED:"..needKey
 					reserved[needReserveKey] = SC_DBNumber(reserved[needReserveKey], 0) + 1
@@ -4859,6 +5066,31 @@ local function SC_ChooseCityProduction(player, city, atWar, reservedOrders)
 		if SC_GetConfig("DebugCityProduction", true) then
 			SC_Debug("cityProduction military-defer city="..tostring(cityName).." reason=queue-quota queuedMilitary="..tostring(queuedMilitary).."/"..tostring(militaryQueueCap).." need="..tostring(militaryNeed).." roster="..tostring(rosterDebug))
 		end
+	end
+	if queuedMilitary < militaryQueueCap then
+		local eliteUnitID, eliteUnitScore, eliteUnitCandidates, eliteUnitReason = SC_GetBestTrainableEliteUnit(player, city, atWar, reservedOrders)
+		if eliteUnitID ~= nil and SC_PushCityOrder(city, OrderTypes.ORDER_TRAIN, eliteUnitID) then
+			local eliteUnitInfo = GameInfo.Units[eliteUnitID]
+			local eliteReserveKey = "ELITE_UNIT:"..tostring(eliteUnitID)
+			local eliteNeed = SC_GetProductionNeedForUnitInfo(eliteUnitInfo)
+			if SC_GetConfig("DebugCityProduction", true) then
+				SC_Debug("cityProduction choose city="..tostring(cityName).." category=elite-unit item="..tostring(eliteUnitInfo and eliteUnitInfo.Type or "UNIT").." score="..tostring(math.floor(eliteUnitScore)).." candidates="..tostring(eliteUnitCandidates).." need="..tostring(eliteNeed).." reason="..tostring(eliteUnitReason).." queue="..tostring(queueLength))
+			end
+			return eliteUnitInfo and eliteUnitInfo.Type or "UNIT", eliteReserveKey, eliteNeed
+		end
+	end
+	local eliteProjectID, eliteProjectScore, eliteProjectCandidates, eliteProjectReason = SC_GetBestEliteProject(player, city, atWar, reservedOrders)
+	if eliteProjectID ~= nil and SC_PushCityOrder(city, OrderTypes.ORDER_CREATE, eliteProjectID) then
+		local eliteProjectInfo = GameInfo.Projects[eliteProjectID]
+		local eliteProjectReserveKey = "X:P:"..tostring(eliteProjectID)
+		if reservedOrders ~= nil then
+			reservedOrders[eliteProjectReserveKey] = true
+			reservedOrders["ELITE_PROJECT_TOTAL"] = SC_DBNumber(reservedOrders["ELITE_PROJECT_TOTAL"], 0) + 1
+		end
+		if SC_GetConfig("DebugCityProduction", true) then
+			SC_Debug("cityProduction choose city="..tostring(cityName).." category=elite-project item="..tostring(eliteProjectInfo and eliteProjectInfo.Type or "PROJECT").." score="..tostring(math.floor(eliteProjectScore)).." candidates="..tostring(eliteProjectCandidates).." reason="..tostring(eliteProjectReason).." queuedProjects="..tostring(reservedOrders ~= nil and reservedOrders["ELITE_PROJECT_TOTAL"] or 1).."/"..tostring(SC_GetConfig("MaxQueuedEliteProjects", 2)).." queue="..tostring(queueLength))
+		end
+		return eliteProjectInfo and eliteProjectInfo.Type or "PROJECT", eliteProjectReserveKey
 	end
 	if buildMilitary then
 		local ok, coastal = pcall(function() return city:IsCoastal() end)
