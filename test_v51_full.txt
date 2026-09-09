@@ -1,0 +1,326 @@
+
+== Paths ==
+
+== V3 architecture contracts ==
+PASS: V3 include - StrategicCommand_V3_State.lua
+PASS: V3 include - StrategicCommand_V3_City.lua
+PASS: V3 include - StrategicCommand_V3_Blockers.lua
+PASS: V3 include - StrategicCommand_V3_Military.lua
+PASS: V3 include - StrategicCommand_V3_SpecialWeapons.lua
+PASS: V3 include - StrategicCommand_ExecutionWorld.lua
+PASS: V3 include - StrategicCommand_ExecutionMilitary.lua
+PASS: V3 include - StrategicCommand_V3_Engine.lua
+PASS: legacy monolithic orchestrators have no callers
+PASS: exactly one takeover turn driver
+PASS: permanent city lock removed and wartime process cap enabled
+PASS: execution-first military loop owns live-world refresh
+
+== Mod manifest hashes ==
+PASS: mod manifest parsed and file hashes checked
+Source version: 5.1
+
+== Lua syntax ==
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)\Lua\StrategicCommand.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)\Lua\StrategicCommand_Config.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)\Lua\StrategicCommand_Strategy.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)\Lua\StrategicCommand_Decisions.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)\Lua\StrategicCommand_CombatModel.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)\Lua\StrategicCommand_Development.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)\Lua\StrategicCommand_V3_State.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)\Lua\StrategicCommand_V3_City.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)\Lua\StrategicCommand_V3_Blockers.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)\Lua\StrategicCommand_V3_SpecialWeapons.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)\Lua\StrategicCommand_V3_Military.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)\Lua\StrategicCommand_ExecutionWorld.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)\Lua\StrategicCommand_ExecutionMilitary.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Strategic Command (v 1)\Lua\StrategicCommand_V3_Engine.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\Popups\SocialPolicyPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\WorldView\ActionInfoPanel.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\Popups\WhosWinningPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\Popups\GreatPersonRewardPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\Popups\GoldenAgePopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\Popups\BarbarianCampPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\Popups\GoodyHutPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\Popups\GoodyHutPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\Popups\CityStateGreetingPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion\UI\InGame\Popups\CityStateGreetingPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\Popups\CityStateGreetingPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\Popups\TechAwardPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\TechPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\TechPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\Popups\NewEraPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\Popups\GreatWorkPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\Popups\LeagueSplash.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\Popups\LeagueProjectPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\Popups\VoteResultsPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\Popups\DeclareWarPopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\PopupsGeneric\DeclareWarMovePopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\PopupsGeneric\DeclareWarRangeStrikePopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\PopupsGeneric\DeclareWarPlunderTradeRoutePopup.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\LeaderHead\LeaderHeadRoot.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\LeaderHead\DiscussionDialog.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\LeaderHead\LeaderHeadRoot.lua
+PASS: E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\LeaderHead\DiscussionDialog.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Super Power Clash of Civilizations (v 5.85_FIN-v 6 Beta)\UI\Override\CityView.lua
+PASS: C:\Users\meade\Documents\My Games\Sid Meier's Civilization 5\MODS\Ingame Editor (v 39.1)\BulkUI\IGE_NotificationPanel.lua
+
+== Static sanity ==
+PASS: move helper forward declarations are in scope
+PASS: strategy contract - tactical cap helper
+PASS: strategy contract - tactical count recorder
+PASS: strategy contract - range target stats
+PASS: strategy contract - old tactical boolean lock removed
+PASS: strategy contract - standoff retreat allowed
+PASS: strategy contract - city production explanation logs
+PASS: strategy contract - post end turn quiet mode
+PASS: strategy contract - post end turn actionable resume
+PASS: strategy contract - city production reservation
+PASS: strategy contract - stack escape requires real movement
+PASS: strategy contract - stack escape stuck fallback
+PASS: strategy contract - range strike status split
+PASS: strategy contract - tactical no-target cache
+PASS: strategy contract - tactical cache wave invalidation
+PASS: strategy contract - tactical queued cache
+PASS: strategy contract - direct targeted fallback enabled
+PASS: strategy contract - strategic movement planner
+PASS: strategy contract - strategic move plot filtering
+PASS: strategy contract - direct move fallback enabled
+PASS: strategy contract - demonstration logging mode
+PASS: strategy contract - demonstration event hooks
+PASS: strategy contract - manual input logs outside takeover
+PASS: strategy contract - late unit production filter
+PASS: strategy contract - demo-inspired assault scoring
+PASS: strategy contract - city fire saturation controls
+PASS: strategy contract - surface fleet capture finishers
+PASS: strategy contract - active capture finisher pass
+PASS: strategy contract - reserved city capture task pipeline
+PASS: strategy contract - operation-bound capture task pipeline
+PASS: strategy contract - dynamic one-turn capture reach
+PASS: strategy contract - post-fire tactical cache refresh
+PASS: strategy contract - special weapon opening phase
+PASS: strategy contract - special weapon survival gate
+PASS: strategy contract - threatened airbase evacuation
+PASS: strategy contract - operation rally fallback
+PASS: strategy contract - capture hull capability rules
+PASS: strategy contract - hard capture capacity and plan floor
+PASS: strategy contract - power based capture security
+PASS: strategy contract - transport escort pass
+PASS: strategy contract - combat doctrine tags
+PASS: strategy contract - protected asset threat scoring
+PASS: strategy contract - elite survival protection tiers
+PASS: strategy contract - pre-move sea transit gate
+PASS: strategy contract - military-base airlift movement chain
+PASS: strategy contract - commander rear-area safety
+PASS: strategy contract - elite ranged standoff
+PASS: strategy contract - shared combat fitness gate
+PASS: strategy contract - capture-ready fire suppression
+PASS: strategy contract - role standoff profiles
+PASS: strategy contract - elite production weighting
+PASS: strategy contract - captured city secure hook
+PASS: strategy contract - non military fallback production skip
+PASS: strategy contract - strategy reason logs
+PASS: strategy contract - carrier standoff desired range
+PASS: strategy contract - database-driven unit doctrine
+PASS: strategy contract - combined arms operation focus
+PASS: strategy contract - decapitation strike focus
+PASS: strategy contract - executable local decapitation
+PASS: strategy contract - capture-ready fire hard stop
+PASS: strategy contract - safe strategic waypoints
+PASS: strategy contract - screen formation movement
+PASS: strategy contract - convoy advance chain
+PASS: strategy contract - threat gated convoy control
+PASS: strategy contract - strategic movement requires state effect
+PASS: strategy contract - mobile airbase post-move rebase
+PASS: strategy contract - opportunity capture substitution
+PASS: strategy contract - wartime strike package production
+PASS: strategy contract - elite project unlock chain
+PASS: strategy contract - elite unit production chain
+PASS: strategy contract - custom era production filter
+PASS: strategy contract - v1.35 production queue migration
+PASS: strategy contract - queued military arm reservations
+PASS: strategy contract - cross-city unique reservation
+PASS: strategy contract - no repeated process queue fill
+PASS: strategy contract - ranged setup and air sweep
+PASS: strategy contract - new war target gate
+PASS: strategy contract - unified unit task ownership
+PASS: strategy contract - national purchase budget
+PASS: strategy contract - capital annex and development chain
+PASS: strategy contract - national city scoring
+PASS: strategy contract - database boolean normalization
+PASS: strategy contract - early safe-number scope
+PASS: strategy contract - healing stack-layer scope
+PASS: strategy contract - strategy module fault isolation
+PASS: strategy contract - diplomacy close retry
+PASS: strategy contract - reward popup takeover coverage
+PASS: strategy contract - religion belief packing safety
+PASS: strategy contract - great person modal de-duplication
+PASS: strategy contract - execution failure retry
+PASS: strategy contract - opportunistic capture substitution
+PASS: strategy operations use bounded defender-scaled force budgets
+PASS: strategy uses a unified national plan and exclusive task board
+PASS: v2.8 blitz, multi-role capability, and marginal utility chain
+PASS: concentrated persistent blitz operation chain
+PASS: capital surplus converts into theater force expansion
+PASS: v2.8 combined-arms allocation and direct casualty telemetry
+PASS: v2.8 bounded diverse mobilization and cached purchase catalog
+PASS: Super Power opponent-turn and air-siege runtime regressions
+PASS: quick-buy city refresh API compatibility
+PASS: quick-buy waits for each building purchase confirmation
+PASS: IGE notification template compatibility
+PASS: takeover closes reward popup before queue - E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\Popups\GoldenAgePopup.lua
+PASS: takeover closes reward popup before queue - E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\Popups\BarbarianCampPopup.lua
+PASS: takeover closes reward popup before queue - E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\Popups\GoodyHutPopup.lua
+PASS: takeover closes reward popup before queue - E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\Popups\GoodyHutPopup.lua
+PASS: takeover closes city-state greeting before queue - E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\Popups\CityStateGreetingPopup.lua
+PASS: takeover closes city-state greeting before queue - E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion\UI\InGame\Popups\CityStateGreetingPopup.lua
+PASS: takeover closes city-state greeting before queue - E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\Popups\CityStateGreetingPopup.lua
+PASS: takeover rejects AI leader popup before queue - E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\LeaderHead\LeaderHeadRoot.lua
+PASS: takeover rejects AI leader popup before queue - E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\LeaderHead\DiscussionDialog.lua
+PASS: takeover rejects AI leader popup before queue - E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\LeaderHead\LeaderHeadRoot.lua
+PASS: takeover rejects AI leader popup before queue - E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\LeaderHead\DiscussionDialog.lua
+PASS: takeover rejects new-war popup - E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\Popups\DeclareWarPopup.lua
+PASS: takeover rejects new-war popup - E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\PopupsGeneric\DeclareWarMovePopup.lua
+PASS: takeover rejects new-war popup - E:\GAME\Civ5+Super Powers Final\Assets\UI\InGame\PopupsGeneric\DeclareWarRangeStrikePopup.lua
+PASS: takeover rejects new-war popup - E:\GAME\Civ5+Super Powers Final\Assets\DLC\Expansion2\UI\InGame\PopupsGeneric\DeclareWarPlunderTradeRoutePopup.lua
+
+== Offline smoke ==
+[Strategic Command][SCDBG][T1] strategyCore loaded version=5.1
+[Strategic Command][SCDBG][T1] state load remaining=0 capturedCityAction=PUPPET
+[Strategic Command] Strategic Command v5.1 loaded.
+[Strategic Command][SCDBG][T1] module error name=smokeFailure err=...\Documents\����mod\StrategicCommand_OfflineSmoke.lua:325: expected smoke failure recovery=continue
+[Strategic Command][SCDBG][T1] decision5 finance runway=9999.0 reserve=0 spendable=0 crisis=stable
+Strategic Command offline smoke passed
+
+== V3 transaction semantics ==
+Strategic Command V3 offline transaction test passed
+PASS: V3 async transactions and light-pass isolation
+
+== Execution-world semantics ==
+Strategic Command execution-world offline test passed
+PASS: identity-only live world, bounded targets, and invalidation
+
+== Strategy simulator ==
+
+== Deployed Lua decision behavior ==
+PASS deployed Lua decision behavior: 52 assertions
+[Strategic Command][SCDBG][T1] strategyCore loaded version=5.1
+[Strategic Command][SCDBG][T1] state load remaining=0 capturedCityAction=PUPPET
+[Strategic Command] Strategic Command v5.1 loaded.
+[Strategic Command][SCDBG][T1] module error name=smokeFailure err=StrategicCommand_OfflineSmoke.lua:325: expected smoke failure recovery=continue
+[Strategic Command][SCDBG][T1] decision5 finance runway=9999.0 reserve=0 spendable=0 crisis=stable
+Strategic Command offline smoke passed
+PASS installed database through deployed Lua: 283 units
+PASS legacy simulator class labels match deployed Lua
+[Strategic Command][SCDBG][T1] strategyCore loaded version=5.1
+[Strategic Command][SCDBG][T1] state load remaining=0 capturedCityAction=PUPPET
+[Strategic Command] Strategic Command v5.1 loaded.
+[Strategic Command][SCDBG][T1] module error name=smokeFailure err=...\Documents\����mod\StrategicCommand_OfflineSmoke.lua:325: expected smoke failure recovery=continue
+[Strategic Command][SCDBG][T1] decision5 finance runway=9999.0 reserve=0 spendable=0 crisis=stable
+Strategic Command offline smoke passed
+PASS deployed movement planner: 40 targets, 6 position searches, fallback after 3 blocked targets
+PASS cross-module private helper contract
+[Strategic Command][SCDBG][T1] strategyCore loaded version=5.1
+[Strategic Command][SCDBG][T1] state load remaining=0 capturedCityAction=PUPPET
+[Strategic Command] Strategic Command v5.1 loaded.
+[Strategic Command][SCDBG][T1] module error name=smokeFailure err=...\Documents\����mod\StrategicCommand_OfflineSmoke.lua:325: expected smoke failure recovery=continue
+[Strategic Command][SCDBG][T1] decision5 finance runway=9999.0 reserve=0 spendable=0 crisis=stable
+Strategic Command offline smoke passed
+[Strategic Command][SCDBG][T217] targetPool build player=P0 cities=1 units=0
+[Strategic Command][SCDBG][T217] captureTaskBoard active=1 assaultOperations=0 opportunities=1 maxTasks=8
+[Strategic Command][SCDBG][T217] captureTask city=1,0 damage=0/200 ratio=0 focus=false operation=opportunity operationDistance=999 state=reserved assigned=1:UNIT_MECH#1@P0:13171 excluded=distance:0,damage:0,domain:0,other:0
+[Strategic Command][SCDBG][T217] decision5 attack seq=1 unit=UNIT_TEST_BOMBER#2@P0 decision=0 authorized=true capture=false city=false confidence=native consumable=false damage=1 enemyID=11 enemyOwner=1 hp=100 key=ranged:3:0 maxHP=100 movesBefore=180 owner=0 protected=true retaliation=1018 selfValue=700 sequence=1 targetHP=90 targetMaxHP=100 targetValue=3000 threat=0.8 uncertainty=0 unitID=2 choiceScore=0
+[Strategic Command][SCDBG][T217] decision5 target-changed decision=9 recovery=rescore-next-wave
+[Strategic Command][SCDBG][T217] executionWorld invalidate generation=1 reason=fixture
+[Strategic Command][SCDBG][T217] executionWorld build turn=217 generation=1 reason=survival units=1 cities=0 cellSize=8
+[Strategic Command][SCDBG][T218] executionWorld invalidate generation=2 reason=fixture-failed-path
+[Strategic Command][SCDBG][T218] executionWorld build turn=218 generation=2 reason=survival units=1 cities=0 cellSize=8
+[Strategic Command][SCDBG][T219] executionWorld invalidate generation=3 reason=fixture-real-fire
+[Strategic Command][SCDBG][T219] localDefense start maxActions=100 maxRounds=3
+[Strategic Command][SCDBG][T219] executionWorld build turn=219 generation=3 reason=fire units=3 cities=0 cellSize=8
+[Strategic Command][SCDBG][T219] decision5 candidate decision=2 rank=1 score=1159.68 authorized=true capture=false city=false confidence=native+mech-script consumable=false damage=70 enemyID=12 enemyOwner=1 hp=100 key=ranged:3:1 maxHP=100 protected=true retaliation=0 selfValue=3000 targetHP=70 targetMaxHP=100 targetValue=600 threat=0.8 uncertainty=0
+[Strategic Command][SCDBG][T219] decision5 candidate decision=2 rank=2 score=38.4 authorized=true capture=false city=false confidence=native consumable=false damage=1 enemyID=11 enemyOwner=1 hp=100 key=ranged:3:0 maxHP=100 protected=true retaliation=0 selfValue=3000 targetHP=90 targetMaxHP=100 targetValue=3000 threat=0.8 uncertainty=0
+[Strategic Command][SCDBG][T219] decision5 selection decision=2 unit=UNIT_MECH#1@P0 considered=3 accepted=2 rejected=not-native-defender=1
+[Strategic Command][SCDBG][T219] decision5 attack seq=3 unit=UNIT_MECH#1@P0 decision=2 authorized=true capture=false city=false confidence=native+mech-script consumable=false damage=70 enemyID=12 enemyOwner=1 hp=100 key=ranged:3:1 maxHP=100 movesBefore=180 owner=0 protected=true retaliation=0 selfValue=3000 sequence=3 targetHP=70 targetMaxHP=100 targetValue=600 threat=0.8 uncertainty=0 unitID=1 choiceScore=1159.68
+[Strategic Command][SCDBG][T219] rangeStrike try unit=UNIT_MECH#1@P0 role=fast_assault target=3,1 airAttack=false
+[Strategic Command][SCDBG][T219] mission unit=UNIT_MECH#1@P0 mission=MISSION_RANGE_ATTACK(7) data=3,1 sentData=3,1 flags=0 ok=true err=nil before=0,0/m180/a? after=0,0/m180/a?
+[Strategic Command][SCDBG][T219] mission direct-target unit=UNIT_MECH#1@P0 mission=MISSION_RANGE_ATTACK(7) target=3,1 reason=range-attack ok=true err=nil state=ready=true,readyLegacy=true,waiting=?,automated=?,canMove=true,moves=180,activity=?,damage=0
+[Strategic Command][SCDBG][T219] mission direct-target-pending unit=UNIT_MECH#1@P0 mission=MISSION_RANGE_ATTACK(7) target=3,1 state=ready=true,readyLegacy=true,waiting=?,automated=?,canMove=true,moves=180,activity=?,damage=0
+[Strategic Command][SCDBG][T219] rangeStrike unresolved unit=UNIT_MECH#1@P0 mission=MISSION_RANGE_ATTACK(7) reason=range-attack directTried=true state=ready=true,readyLegacy=true,waiting=?,automated=?,canMove=true,moves=180,activity=?,damage=0
+[Strategic Command][SCDBG][T219] rangeStrike native unit=UNIT_MECH#1@P0 target=3,1 ok=true err=nil removed=false
+[Strategic Command][SCDBG][T219] rangeStrike resolved unit=UNIT_MECH#1@P0 method=native status=fired changed=true needsOrder=false moves=180->0 damage=0->0 activity=-999999->-999999 state=ready=false,readyLegacy=false,waiting=?,automated=?,canMove=false,moves=0,activity=?,damage=0
+[Strategic Command][SCDBG][T219] decision5 outcome seq=3 status=fired confirmed=true observedDamage=70 observedLoss=0 movesBefore=180 movesAfter=0 scriptExpected=0 scriptObserved=0 scriptAffected=0 predictionError=0
+[Strategic Command][SCDBG][T219] localDefense fired round=1 unit=UNIT_MECH#1@P0 role=fast_assault class=super_heavy tag=super_heavy status=fired count=1/2 target=3,1 score=1159.68 reason=damage=70/70,return=0,kill=true,value=906,loss=0,script=0,preview=native+mech-script
+[Strategic Command][SCDBG][T219] localDefense cannot-act unit=UNIT_MECH#1@P0 role=fast_assault tag=super_heavy
+[Strategic Command][SCDBG][T219] localDefense end actions=1
+[Strategic Command][SCDBG][T219] mission unit=UNIT_MECH#1@P0 mission=MISSION_MOVE_TO(6) data=-1,0 sentData=-1,0 flags=0 ok=true err=nil before=0,0/m180/a? after=0,0/m180/a?
+[Strategic Command][SCDBG][T219] moveMission unit=UNIT_MECH#1@P0 reason=survival-withdraw target=-1,0 accepted=false changedPlot=false combatResolved=false targetState=-1/0->-1/0 requirePlotChange=true state=ready=true,readyLegacy=true,waiting=?,automated=?,canMove=true,moves=180,activity=?,damage=0
+[Strategic Command][SCDBG][T219] moveMission direct-fallback unit=UNIT_MECH#1@P0 reason=survival-withdraw target=-1,0 ok=true err=nil accepted=false changedPlot=false combatResolved=false requirePlotChange=true state=ready=true,readyLegacy=true,waiting=?,automated=?,canMove=true,moves=180,activity=?,damage=0
+[Strategic Command][SCDBG][T219] executionWorld invalidate generation=4 reason=fixture-chain
+[Strategic Command][SCDBG][T219] executionWorld invalidate generation=5 reason=fixture-chain-fog
+PASS real-main combat integration: 45 checks
+PASS actual Lua replay transport and capture/peace branches
+PASS replay detects wrong stacked defender, military module failure, and enemy-turn deaths
+
+== Historical simulator contracts (not native engine effectiveness) ==
+Legacy arithmetic scenarios are hypotheses, not gameplay outcomes. Deployed Lua replay and observed execution are separate evidence.
+PASS catalog: 283 units, 240 military, 31 doctrine classes
+CONTRACT combat arithmetic: destroyed 6/6, city captured=True, losses=0, accidental wars=0
+PASS convoy: zero-threat advance, escorted advance to landing, exposed transport hold
+PASS airlift: direct=airlift, stage=airlift-stage, async=pending->confirmed, reverse-blocked=True
+PASS target memory: switches=5->1, assignments=north_city,north_city,north_city,north_city,north_city,east_city
+PASS scope/runtime: expensive candidates=294->26 (91.2% reduction), modes=light,full,light,light,light,light
+PASS quick buy: purchases=BARRACKS,ARMORY,ARSENAL, one submission/tick, stop=insufficient-gold
+PASS theater: local screens=2, far artillery=land_front, escort retries=1
+PASS runtime: sweeps=3, heal orders=1, GP roles=6, capture slots=2
+PASS capture task: assignments={'capture|49,41': ['052D-A', 'LCS-A'], 'capture|53,42': ['052D-B', 'LCS-B']}, cap=2, negative plans rejected=2
+PASS purchase: reserve=75000, budget=99689, max=5, needs=rapid_capture,rapid_capture,line_frontline,naval_fire,air_strike, GP waypoint=(42, 34)
+PASS capital conversion: annexed=industrial_hub, buildings=COURTHOUSE, force=620, max purchases=10
+PASS production: packages=5, arms=air_strike,air_superiority,fleet_carrier,missile_strike,naval_fire,naval_screen, unique wonder assignments=1, military queue slots=2
+PASS focus: selected=near_capital, far city rejected, zero-HP and negative-score fire suppressed
+PASS elite: detected=27, late=12, queued projects=2, mech excluded
+PASS protection: tiers={'mech': 3, 'rocket_artillery': 2, 'apache': 2}, sea=hold:1/2, apache=retreat, artillery standoff=4
+PASS historical replay: guarded 11/11 observed v1.40 losses; interventions={'commander-rear-area': 2, 'damage-retreat': 4, 'escort-shortfall': 3, 'ranged-standoff': 4, 'sea-transit-gate': 4}
+PASS lifecycle: old crash=True, new=unit-removed, convoy=advance-when-screened
+PASS national strategy: count ratio=0.255 -> local power=2.71 posture=decapitation, defense=frontier_city, assault=screened_port, air sweeps=5/24, assigned=120/324, target force=96, purchase budget=92436, process=4
+PASS v2.9 joint operations: convoys={'ROCKET_ARTILLERY': 'advance-to-landing', 'CRUSADER_ARTILLERY': 'advance-to-landing', 'MECHANIZED_INFANTRY': 'advance-to-landing', 'COBRA': 'hold-for-screen'}, missile targets=3, defense air strike cap=1, city submissions=1
+PASS v3 takeover: async=confirmed, instant=retry, submissions=2, drivers=1, light=light-convergence,blocker
+PASS v3.1 expert replay: opening=ballistic_submarine, missiles=4, cityHP=39->0, capture=UNIT_CHINESE_052D@11/11, refresh=True
+PASS v3.2 battlefield recovery: particle=reposition>fire, capture-lock={'052D': 'city_56_49'}, air-evac=rear_city, axes=2, fallback=rally-waypoint
+PASS v4 execution-first: actions=0->3, generations=3, retry=1 rejected/1 accepted, failed-consumed=False
+PASS v4.1 execution doctrine: axes=3, capture tasks=6, substitute=fresh-infantry, mobile bases=12, no-effect rejected=True
+Doctrine distribution:
+  air_defense_screen: 11
+  air_superiority: 9
+  airborne_raider: 7
+  arsenal_capital: 2
+  attack_submarine: 9
+  ballistic_submarine: 1
+  carrier_multirole: 5
+  civilian_builder: 3
+  civilian_religious: 6
+  civilian_settler: 1
+  civilian_spaceship: 17
+  civilian_specialist: 13
+  civilian_trade: 3
+  counter_defender: 11
+  escort_screen: 6
+  fleet_carrier: 6
+  gunship: 21
+  line_assault: 23
+  line_defender: 3
+  missile_strike: 4
+  mobile_air_defense: 5
+  mobile_breakthrough: 27
+  naval_assault: 8
+  ranged_support: 1
+  recon_raider: 12
+  siege_artillery: 35
+  static_fortress: 3
+  strategic_nuclear: 5
+  strike_aircraft: 11
+  super_heavy: 1
+  surface_fire_support: 14
+PASS: historical contracts executed; consult FIDELITY separately. This is not a gameplay victory test.
+
+== Result ==
+PASS: Strategic Command automated checks completed

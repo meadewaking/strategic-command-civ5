@@ -1,0 +1,299 @@
+{
+  "status": "FAIL",
+  "observed_versions": [
+    "5.0"
+  ],
+  "candidate_facts": 636,
+  "mismatches": [],
+  "immediate_outcomes": 265,
+  "confirmed_outcomes": 251,
+  "mean_absolute_damage_error": 4.247011952191235,
+  "unconfirmed_outcomes": 14,
+  "execution_integrity": {
+    "module_errors": {
+      "v3.executionMilitary.captureOpening": 8,
+      "v3.executionMilitary.captureAfterOpening": 8,
+      "v3.executionMilitary.move1": 8,
+      "v3.executionMilitary.capture1": 8,
+      "v3.executionMilitary.move2": 2,
+      "v3.executionMilitary.capture2": 2
+    },
+    "module_error_count": 36,
+    "target_inconsistency_count": 98,
+    "target_inconsistency_samples": [
+      {
+        "decision": "3",
+        "key": "ranged:68:43",
+        "fields": [
+          "damage",
+          "retaliation",
+          "targetHP",
+          "targetValue"
+        ]
+      },
+      {
+        "decision": "5",
+        "key": "ranged:56:39",
+        "fields": [
+          "retaliation",
+          "targetHP"
+        ]
+      },
+      {
+        "decision": "7",
+        "key": "ranged:68:43",
+        "fields": [
+          "damage",
+          "retaliation",
+          "targetHP",
+          "targetValue"
+        ]
+      },
+      {
+        "decision": "9",
+        "key": "ranged:68:43",
+        "fields": [
+          "damage",
+          "retaliation",
+          "targetHP",
+          "targetValue"
+        ]
+      },
+      {
+        "decision": "78",
+        "key": "ranged:56:37",
+        "fields": [
+          "damage",
+          "targetHP"
+        ]
+      },
+      {
+        "decision": "88",
+        "key": "ranged:56:38",
+        "fields": [
+          "damage",
+          "targetHP"
+        ]
+      },
+      {
+        "decision": "97",
+        "key": "ranged:57:55",
+        "fields": [
+          "targetHP"
+        ]
+      },
+      {
+        "decision": "109",
+        "key": "ranged:57:55",
+        "fields": [
+          "damage",
+          "targetHP"
+        ]
+      },
+      {
+        "decision": "111",
+        "key": "ranged:57:53",
+        "fields": [
+          "damage",
+          "targetHP"
+        ]
+      },
+      {
+        "decision": "239",
+        "key": "ranged:68:43",
+        "fields": [
+          "damage",
+          "retaliation",
+          "targetHP",
+          "targetValue"
+        ]
+      },
+      {
+        "decision": "315",
+        "key": "ranged:68:43",
+        "fields": [
+          "damage",
+          "retaliation",
+          "targetHP",
+          "targetValue"
+        ]
+      },
+      {
+        "decision": "647",
+        "key": "ranged:63:49",
+        "fields": [
+          "damage",
+          "retaliation",
+          "targetHP"
+        ]
+      }
+    ],
+    "own_death_events": 180,
+    "own_hostile_death_events": 177,
+    "own_death_types": {
+      "UNIT_FUTURE_BATTLESHIP": 8,
+      "UNIT_KIROV_BATTLECRUISER": 4,
+      "UNIT_GUIDED_MISSILE": 44,
+      "UNIT_MILITIA_MODERN": 27,
+      "UNIT_PARTICLE_CANNON": 9,
+      "UNIT_NUCLEAR_ARTILLERY": 3,
+      "UNIT_CRUSADER_ARTILLERY": 2,
+      "UNIT_SELF_PROPELLED_ARTILLERY": 2,
+      "UNIT_CHINESE_WEISHI": 2,
+      "UNIT_MERCHANT": 2,
+      "UNIT_ORBITAL_STRIKE": 1,
+      "UNIT_STEALTH_BOMBER": 6,
+      "UNIT_STEALTH_ATTACK_AIRCRAFT": 3,
+      "UNIT_JET_FIGHTER": 3,
+      "UNIT_MODERN_ARMOR": 2,
+      "UNIT_CARRIER_FIGHTER_ADV": 30,
+      "UNIT_SUPER_CARRIER": 5,
+      "UNIT_OTTOMAN_COBRA": 2,
+      "UNIT_NUCLEAR_SUBMARINE": 4,
+      "UNIT_LITTORAL_COMBAT_SHIP": 12,
+      "UNIT_ATGM_VEHICLE": 2,
+      "UNIT_WORKER": 2,
+      "UNIT_SAM_INFANTRY": 1,
+      "UNIT_CHINESE_052D": 2,
+      "UNIT_GREAT_GENERAL": 1,
+      "UNIT_SSBN": 1
+    },
+    "deaths_after_firing": 39,
+    "death_samples": [
+      {
+        "owner": "0",
+        "unitID": "1892494",
+        "killer": "9",
+        "turn": "217",
+        "unit": "UNIT_FUTURE_BATTLESHIP",
+        "last_attack_turn": "217",
+        "last_attack_hp": "100",
+        "moves_after_fire": null,
+        "last_target": "ranged:58:58"
+      },
+      {
+        "owner": "0",
+        "unitID": "1867915",
+        "killer": "9",
+        "turn": "217",
+        "unit": "UNIT_KIROV_BATTLECRUISER",
+        "last_attack_turn": null,
+        "last_attack_hp": null,
+        "moves_after_fire": null,
+        "last_target": null
+      },
+      {
+        "owner": "0",
+        "unitID": "2179248",
+        "killer": "9",
+        "turn": "217",
+        "unit": "UNIT_GUIDED_MISSILE",
+        "last_attack_turn": null,
+        "last_attack_hp": null,
+        "moves_after_fire": null,
+        "last_target": null
+      },
+      {
+        "owner": "0",
+        "unitID": "4579647",
+        "killer": "9",
+        "turn": "217",
+        "unit": "UNIT_GUIDED_MISSILE",
+        "last_attack_turn": "217",
+        "last_attack_hp": "100",
+        "moves_after_fire": null,
+        "last_target": "ranged:54:67"
+      },
+      {
+        "owner": "0",
+        "unitID": "4587729",
+        "killer": "9",
+        "turn": "217",
+        "unit": "UNIT_GUIDED_MISSILE",
+        "last_attack_turn": null,
+        "last_attack_hp": null,
+        "moves_after_fire": null,
+        "last_target": null
+      },
+      {
+        "owner": "0",
+        "unitID": "4595715",
+        "killer": "9",
+        "turn": "217",
+        "unit": "UNIT_GUIDED_MISSILE",
+        "last_attack_turn": null,
+        "last_attack_hp": null,
+        "moves_after_fire": null,
+        "last_target": null
+      },
+      {
+        "owner": "0",
+        "unitID": "4603909",
+        "killer": "9",
+        "turn": "217",
+        "unit": "UNIT_GUIDED_MISSILE",
+        "last_attack_turn": "217",
+        "last_attack_hp": "100",
+        "moves_after_fire": null,
+        "last_target": "ranged:60:65"
+      },
+      {
+        "owner": "0",
+        "unitID": "4702336",
+        "killer": "9",
+        "turn": "217",
+        "unit": "UNIT_GUIDED_MISSILE",
+        "last_attack_turn": "217",
+        "last_attack_hp": "100",
+        "moves_after_fire": null,
+        "last_target": "ranged:57:58"
+      },
+      {
+        "owner": "0",
+        "unitID": "4710703",
+        "killer": "9",
+        "turn": "217",
+        "unit": "UNIT_GUIDED_MISSILE",
+        "last_attack_turn": null,
+        "last_attack_hp": null,
+        "moves_after_fire": null,
+        "last_target": null
+      },
+      {
+        "owner": "0",
+        "unitID": "4718612",
+        "killer": "9",
+        "turn": "217",
+        "unit": "UNIT_GUIDED_MISSILE",
+        "last_attack_turn": "217",
+        "last_attack_hp": "100",
+        "moves_after_fire": null,
+        "last_target": "ranged:59:62"
+      },
+      {
+        "owner": "0",
+        "unitID": "4726961",
+        "killer": "9",
+        "turn": "217",
+        "unit": "UNIT_GUIDED_MISSILE",
+        "last_attack_turn": null,
+        "last_attack_hp": null,
+        "moves_after_fire": null,
+        "last_target": null
+      },
+      {
+        "owner": "0",
+        "unitID": "2474195",
+        "killer": "9",
+        "turn": "217",
+        "unit": "UNIT_MILITIA_MODERN",
+        "last_attack_turn": null,
+        "last_attack_hp": null,
+        "moves_after_fire": null,
+        "last_target": null
+      }
+    ],
+    "scope": "Whole log death events, deduplicated by owner/unit ID. Missiles and civilians included; deaths are not automatically classified as tactical losses. Prediction agreement is not target or next-turn survival agreement."
+  },
+  "scope": "Top candidate scores only; outcome attribution is immediate, not a native-engine simulator. No facts means no new-strategy effectiveness claim."
+}

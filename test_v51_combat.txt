@@ -1,0 +1,39 @@
+[Strategic Command][SCDBG][T1] strategyCore loaded version=5.1
+[Strategic Command][SCDBG][T1] state load remaining=0 capturedCityAction=PUPPET
+[Strategic Command] Strategic Command v5.1 loaded.
+[Strategic Command][SCDBG][T1] module error name=smokeFailure err=.../Documents/����mod/StrategicCommand_OfflineSmoke.lua:325: expected smoke failure recovery=continue
+[Strategic Command][SCDBG][T1] decision5 finance runway=9999.0 reserve=0 spendable=0 crisis=stable
+Strategic Command offline smoke passed
+[Strategic Command][SCDBG][T217] targetPool build player=P0 cities=1 units=0
+[Strategic Command][SCDBG][T217] captureTaskBoard active=1 assaultOperations=0 opportunities=1 maxTasks=8
+[Strategic Command][SCDBG][T217] captureTask city=1,0 damage=0/200 ratio=0 focus=false operation=opportunity operationDistance=999 state=reserved assigned=1:UNIT_MECH#1@P0:13171 excluded=distance:0,damage:0,domain:0,other:0
+[Strategic Command][SCDBG][T217] decision5 attack seq=1 unit=UNIT_TEST_BOMBER#2@P0 decision=0 authorized=true capture=false city=false confidence=native consumable=false damage=1 enemyID=11 enemyOwner=1 hp=100 key=ranged:3:0 maxHP=100 movesBefore=180 owner=0 protected=true retaliation=1018 selfValue=700 sequence=1 targetHP=90 targetMaxHP=100 targetValue=3000 threat=0.8 uncertainty=0 unitID=2 choiceScore=0
+[Strategic Command][SCDBG][T217] decision5 target-changed decision=9 recovery=rescore-next-wave
+[Strategic Command][SCDBG][T217] executionWorld invalidate generation=1 reason=fixture
+[Strategic Command][SCDBG][T217] executionWorld build turn=217 generation=1 reason=survival units=1 cities=0 cellSize=8
+[Strategic Command][SCDBG][T218] executionWorld invalidate generation=2 reason=fixture-failed-path
+[Strategic Command][SCDBG][T218] executionWorld build turn=218 generation=2 reason=survival units=1 cities=0 cellSize=8
+[Strategic Command][SCDBG][T219] executionWorld invalidate generation=3 reason=fixture-real-fire
+[Strategic Command][SCDBG][T219] localDefense start maxActions=100 maxRounds=3
+[Strategic Command][SCDBG][T219] executionWorld build turn=219 generation=3 reason=fire units=3 cities=0 cellSize=8
+[Strategic Command][SCDBG][T219] decision5 candidate decision=2 rank=1 score=1159.68 authorized=true capture=false city=false confidence=native+mech-script consumable=false damage=70 enemyID=12 enemyOwner=1 hp=100 key=ranged:3:1 maxHP=100 protected=true retaliation=0 selfValue=3000 targetHP=70 targetMaxHP=100 targetValue=600 threat=0.8 uncertainty=0
+[Strategic Command][SCDBG][T219] decision5 candidate decision=2 rank=2 score=38.4 authorized=true capture=false city=false confidence=native consumable=false damage=1 enemyID=11 enemyOwner=1 hp=100 key=ranged:3:0 maxHP=100 protected=true retaliation=0 selfValue=3000 targetHP=90 targetMaxHP=100 targetValue=3000 threat=0.8 uncertainty=0
+[Strategic Command][SCDBG][T219] decision5 selection decision=2 unit=UNIT_MECH#1@P0 considered=3 accepted=2 rejected=not-native-defender=1
+[Strategic Command][SCDBG][T219] decision5 attack seq=3 unit=UNIT_MECH#1@P0 decision=2 authorized=true capture=false city=false confidence=native+mech-script consumable=false damage=70 enemyID=12 enemyOwner=1 hp=100 key=ranged:3:1 maxHP=100 movesBefore=180 owner=0 protected=true retaliation=0 selfValue=3000 sequence=3 targetHP=70 targetMaxHP=100 targetValue=600 threat=0.8 uncertainty=0 unitID=1 choiceScore=1159.68
+[Strategic Command][SCDBG][T219] rangeStrike try unit=UNIT_MECH#1@P0 role=fast_assault target=3,1 airAttack=false
+[Strategic Command][SCDBG][T219] mission unit=UNIT_MECH#1@P0 mission=MISSION_RANGE_ATTACK(7) data=3,1 sentData=3,1 flags=0 ok=true err=nil before=0,0/m180/a? after=0,0/m180/a?
+[Strategic Command][SCDBG][T219] mission direct-target unit=UNIT_MECH#1@P0 mission=MISSION_RANGE_ATTACK(7) target=3,1 reason=range-attack ok=true err=nil state=ready=true,readyLegacy=true,waiting=?,automated=?,canMove=true,moves=180,activity=?,damage=0
+[Strategic Command][SCDBG][T219] mission direct-target-pending unit=UNIT_MECH#1@P0 mission=MISSION_RANGE_ATTACK(7) target=3,1 state=ready=true,readyLegacy=true,waiting=?,automated=?,canMove=true,moves=180,activity=?,damage=0
+[Strategic Command][SCDBG][T219] rangeStrike unresolved unit=UNIT_MECH#1@P0 mission=MISSION_RANGE_ATTACK(7) reason=range-attack directTried=true state=ready=true,readyLegacy=true,waiting=?,automated=?,canMove=true,moves=180,activity=?,damage=0
+[Strategic Command][SCDBG][T219] rangeStrike native unit=UNIT_MECH#1@P0 target=3,1 ok=true err=nil removed=false
+[Strategic Command][SCDBG][T219] rangeStrike resolved unit=UNIT_MECH#1@P0 method=native status=fired changed=true needsOrder=false moves=180->0 damage=0->0 activity=-999999->-999999 state=ready=false,readyLegacy=false,waiting=?,automated=?,canMove=false,moves=0,activity=?,damage=0
+[Strategic Command][SCDBG][T219] decision5 outcome seq=3 status=fired confirmed=true observedDamage=70 observedLoss=0 movesBefore=180 movesAfter=0 scriptExpected=0 scriptObserved=0 scriptAffected=0 predictionError=0
+[Strategic Command][SCDBG][T219] localDefense fired round=1 unit=UNIT_MECH#1@P0 role=fast_assault class=super_heavy tag=super_heavy status=fired count=1/2 target=3,1 score=1159.68 reason=damage=70/70,return=0,kill=true,value=906,loss=0,script=0,preview=native+mech-script
+[Strategic Command][SCDBG][T219] localDefense cannot-act unit=UNIT_MECH#1@P0 role=fast_assault tag=super_heavy
+[Strategic Command][SCDBG][T219] localDefense end actions=1
+[Strategic Command][SCDBG][T219] mission unit=UNIT_MECH#1@P0 mission=MISSION_MOVE_TO(6) data=-1,0 sentData=-1,0 flags=0 ok=true err=nil before=0,0/m180/a? after=0,0/m180/a?
+[Strategic Command][SCDBG][T219] moveMission unit=UNIT_MECH#1@P0 reason=survival-withdraw target=-1,0 accepted=false changedPlot=false combatResolved=false targetState=-1/0->-1/0 requirePlotChange=true state=ready=true,readyLegacy=true,waiting=?,automated=?,canMove=true,moves=180,activity=?,damage=0
+[Strategic Command][SCDBG][T219] moveMission direct-fallback unit=UNIT_MECH#1@P0 reason=survival-withdraw target=-1,0 ok=true err=nil accepted=false changedPlot=false combatResolved=false requirePlotChange=true state=ready=true,readyLegacy=true,waiting=?,automated=?,canMove=true,moves=180,activity=?,damage=0
+[Strategic Command][SCDBG][T219] executionWorld invalidate generation=4 reason=fixture-chain
+[Strategic Command][SCDBG][T219] executionWorld invalidate generation=5 reason=fixture-chain-fog
+PASS real-main combat integration: 45 checks

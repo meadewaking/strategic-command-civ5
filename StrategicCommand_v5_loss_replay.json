@@ -1,0 +1,13 @@
+{
+  "status": "SCORING_REPRODUCED",
+  "observed_versions": [
+    "5.0"
+  ],
+  "candidate_facts": 636,
+  "mismatches": [],
+  "immediate_outcomes": 265,
+  "confirmed_outcomes": 251,
+  "mean_absolute_damage_error": 4.247011952191235,
+  "unconfirmed_outcomes": 14,
+  "scope": "Top candidate scores only; outcome attribution is immediate, not a native-engine simulator. No facts means no new-strategy effectiveness claim."
+}
