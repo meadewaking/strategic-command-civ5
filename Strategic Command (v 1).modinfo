@@ -25,10 +25,22 @@
     <Dlc id="6DA07636-4123-4018-B643-6575B4EC336B" minversion="0" maxversion="999" />
   </Dependencies>
   <Files>
-    <File md5="C41971CBC2CDA1DF5E574DFBB1F20099" import="1">Lua/StrategicCommand_Config.lua</File>
-    <File md5="3ED883868679559203E841F6C4C66718" import="1">Lua/StrategicCommand.lua</File>
+    <File md5="D0F7DA0595574796DE0403CE209EF931" import="1">Lua/StrategicCommand_Decisions.lua</File>
+    <File md5="D11985A1D1A55D970DE3DDAB743BC17B" import="1">Lua/StrategicCommand_CombatModel.lua</File>
+    <File md5="CA7BE62159148E268A9F11DEBEC2C9BF" import="1">Lua/StrategicCommand_Development.lua</File>
+    <File md5="9F016A963A634FA82341833D71CBA694" import="1">Lua/StrategicCommand_Config.lua</File>
+    <File md5="BA3710C769FD096E0C75C19AC985CB1E" import="1">Lua/StrategicCommand_Strategy.lua</File>
+    <File md5="E7779BB0F3B87A87FAE7086C39164AA9" import="1">Lua/StrategicCommand_ExecutionWorld.lua</File>
+    <File md5="AF145CB72FCF540CF2B0BD3C4DBE5AA9" import="1">Lua/StrategicCommand_V3_State.lua</File>
+    <File md5="D13732FF0DF27608283BCC5EC1ED4C53" import="1">Lua/StrategicCommand_V3_City.lua</File>
+    <File md5="E02C7AE8E5320C80AEAAC46E6EE75986" import="1">Lua/StrategicCommand_V3_Blockers.lua</File>
+    <File md5="B3774D91F37DB7A7E945C04CE9DD1F3C" import="1">Lua/StrategicCommand_V3_SpecialWeapons.lua</File>
+    <File md5="80237A2F62FE41627D38623B15B1C89C" import="1">Lua/StrategicCommand_V3_Military.lua</File>
+    <File md5="7980617878668AE92A08F8DA8F0ACC7A" import="1">Lua/StrategicCommand_ExecutionMilitary.lua</File>
+    <File md5="C27DCC624C46694A3FD989DED74E4ADD" import="1">Lua/StrategicCommand_V3_Engine.lua</File>
+    <File md5="E530CD836D38F826962DD6AA2A5F610E" import="1">Lua/StrategicCommand.lua</File>
     <File md5="E11C124E11C669A03347406D2C17F882" import="1">Lua/StrategicCommand.xml</File>
-    <File md5="F695475DA6E597D5E9D762C75053710D" import="0">Docs/README.txt</File>
+    <File md5="58E7FDC6B7EFA813330E7D31514C20B3" import="0">Docs/README.txt</File>
   </Files>
   <EntryPoints>
     <EntryPoint type="InGameUIAddin" file="Lua/StrategicCommand.xml">
